@@ -1,6 +1,8 @@
 """Integration test for the OPC UA server (app/services/opc_broadcast_server.py)
 -- exercised against a real asyncua Client over loopback, not a mock, so
-what's asserted is a genuine OPC UA read of a published variable node."""
+what's asserted is a genuine OPC UA read of a published variable node.
+Each chamber gets its own sub-object node under ChamberVariables, keyed by
+the chamber_label passed to broadcast()."""
 
 import socket
 import sys
@@ -38,7 +40,8 @@ def test_start_broadcast_stop_roundtrip(qtbot, opc_server):
     assert opc_server.is_running() is True
 
     opc_server.set_update_rate(50)
-    opc_server.broadcast({"temp": 42.5, "temp_ref": 45.0})
+    opc_server.broadcast("Chamber 1", {"temp": 42.5, "temp_ref": 45.0})
+    opc_server.broadcast("Chamber 2", {"temp": 10.0, "temp_ref": 15.0})
 
     client = Client(url=f"opc.tcp://127.0.0.1:{port}/deepvac/insight/")
     client.connect()
@@ -46,32 +49,40 @@ def test_start_broadcast_stop_roundtrip(qtbot, opc_server):
         idx = client.get_namespace_index("urn:test:opc")
         objects = client.get_objects_node()
 
-        def _chamber_node():
-            # ChamberVariables (and each variable under it) is only added
-            # once the first sample arrives, so get_child() legitimately
-            # errors (BadNoMatch) until then -- that's the condition being
-            # waited on, not a real failure.
+        def _chamber_node(label):
+            # ChamberVariables/<label> (and each variable under it) is only
+            # added once the first sample for that chamber arrives, so
+            # get_child() legitimately errors (BadNoMatch) until then --
+            # that's the condition being waited on, not a real failure.
             try:
-                return objects.get_child([f"{idx}:ChamberVariables"])
+                return objects.get_child([f"{idx}:ChamberVariables", f"{idx}:{label}"])
             except ua.UaStatusCodeError:
                 return None
 
-        qtbot.waitUntil(lambda: _chamber_node() is not None, timeout=5000)
-        chamber = _chamber_node()
+        qtbot.waitUntil(lambda: _chamber_node("Chamber 1") is not None, timeout=5000)
+        chamber1 = _chamber_node("Chamber 1")
+        qtbot.waitUntil(lambda: _chamber_node("Chamber 2") is not None, timeout=5000)
+        chamber2 = _chamber_node("Chamber 2")
 
-        def _temp_value():
+        def _temp_value(chamber):
             try:
                 return chamber.get_child([f"{idx}:temp"]).get_value()
             except ua.UaStatusCodeError:
                 return None
 
-        qtbot.waitUntil(lambda: _temp_value() == 42.5, timeout=5000)
-        assert chamber.get_child([f"{idx}:temp_ref"]).get_value() == 45.0
+        qtbot.waitUntil(lambda: _temp_value(chamber1) == 42.5, timeout=5000)
+        assert chamber1.get_child([f"{idx}:temp_ref"]).get_value() == 45.0
 
-        # A later sample updates the same nodes in place rather than
-        # creating new ones.
-        opc_server.broadcast({"temp": 50.0, "temp_ref": 45.0})
-        qtbot.waitUntil(lambda: _temp_value() == 50.0, timeout=5000)
+        # The second chamber gets its own, independent set of nodes -- not
+        # overwriting the first chamber's values.
+        qtbot.waitUntil(lambda: _temp_value(chamber2) == 10.0, timeout=5000)
+        assert chamber2.get_child([f"{idx}:temp_ref"]).get_value() == 15.0
+
+        # A later sample updates the same chamber's nodes in place rather
+        # than creating new ones.
+        opc_server.broadcast("Chamber 1", {"temp": 50.0, "temp_ref": 45.0})
+        qtbot.waitUntil(lambda: _temp_value(chamber1) == 50.0, timeout=5000)
+        assert _temp_value(chamber2) == 10.0
     finally:
         client.disconnect()
 

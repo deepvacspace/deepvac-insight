@@ -50,12 +50,12 @@ def test_revisiting_a_page_does_not_grow_signal_connections(window, index):
 
 
 def test_no_real_chamber_connection_attempted_while_navigating(window):
-    # Live Monitoring's connection is only ever opened by an explicit
-    # Connect click (app/views/monitoring.py's _on_connect_clicked), never
+    # Live Monitoring's connections are only ever opened by an explicit
+    # Connect click (app/views/monitoring.py's _on_mon_connect_new), never
     # by navigation or construction -- confirmed here rather than assumed.
     for index in range(8):
         window._nav_to(index)
-    assert window.tcp.is_connected() is False
+    assert window._chamber_sessions == {}
     assert window.opc_server.is_running() is False
 
 

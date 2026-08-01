@@ -1,5 +1,7 @@
 """AlarmHistoryDialog — view/acknowledge past alarm events and export the
-log to CSV (app/services/alarms_service.py)."""
+log to CSV (app/services/alarms_service.py). Pass chamber_id to scope to
+one chamber's history (used by a chamber tab's "History…" button);
+omit it for the Dashboard's unfiltered, all-chambers view."""
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,11 +21,12 @@ from app.services import alarms_service
 
 
 class AlarmHistoryDialog(QDialog):
-    def __init__(self, current_user=None, parent=None):
+    def __init__(self, current_user=None, chamber_id=None, parent=None):
         super().__init__(parent)
         self.current_user = current_user or {"name": "Unknown"}
+        self.chamber_id = chamber_id
         self.setWindowTitle(self.tr("Alarm History"))
-        self.setMinimumSize(720, 420)
+        self.setMinimumSize(760, 420)
         self._build_ui()
         self._refresh()
 
@@ -31,10 +34,11 @@ class AlarmHistoryDialog(QDialog):
         root = QVBoxLayout(self)
 
         self._table = QTableWidget()
-        self._table.setColumnCount(8)
+        self._table.setColumnCount(9)
         self._table.setHorizontalHeaderLabels(
             [
                 self.tr("Rule"),
+                self.tr("Chamber"),
                 self.tr("Severity"),
                 self.tr("Value"),
                 self.tr("Triggered"),
@@ -62,11 +66,12 @@ class AlarmHistoryDialog(QDialog):
         root.addLayout(button_row)
 
     def _refresh(self):
-        self._events = alarms_service.list_events()
+        self._events = alarms_service.list_events(chamber_id=self.chamber_id)
         self._table.setRowCount(len(self._events))
         for row_idx, event in enumerate(self._events):
             values = [
                 event["rule_name"],
+                event.get("chamber_name") or "—",
                 event["severity"],
                 fmt(event["trigger_value"]),
                 event["triggered_at"] or "",
@@ -82,7 +87,7 @@ class AlarmHistoryDialog(QDialog):
             else:
                 ack_btn = QPushButton(self.tr("Acknowledge"))
                 ack_btn.clicked.connect(lambda _=False, e=event: self._acknowledge(e))
-            self._table.setCellWidget(row_idx, 7, ack_btn)
+            self._table.setCellWidget(row_idx, 8, ack_btn)
         self._table.resizeColumnsToContents()
 
     def _acknowledge(self, event):

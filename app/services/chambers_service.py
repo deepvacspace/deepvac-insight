@@ -1,10 +1,9 @@
 """Persisted registry of named chamber connections (name + host + port), in
 its own local SQLite database.
 
-The app connects to one chamber at a time (see views/monitoring.py) -- this
-isn't a simultaneous multi-chamber monitor. What this adds is a saved,
-named list to pick from instead of typing a host/port every time, so the
-Dashboard's "Chamber" filter has real, meaningful entries (a run saved via
+The app can connect to several of these at once (up to
+chamber_session.MAX_CONNECTED_CHAMBERS, see views/monitoring.py and
+main_window.py's _connect_chamber) (a run saved via
 "Save Session as Run" is tagged with whichever chamber was connected at the
 time -- see data_service.save_monitoring_session()'s chamber parameter).
 """

@@ -3,15 +3,24 @@ own local SQLite database -- rules and past events both survive restarts
 (unlike the in-memory-only alarm list this replaces).
 
 Two tables: alarm_rules (the persistent definition: name, variable,
-condition, threshold(s), severity, deadband, delay) and alarm_events (one
-row per trigger, with acknowledgement/comment fields and a cleared_at
-timestamp set when the condition stops holding).
+condition, threshold(s), severity, deadband, delay, and which chamber it
+belongs to) and alarm_events (one row per trigger, with
+acknowledgement/comment fields and a cleared_at timestamp set when the
+condition stops holding).
+
+Rules are scoped per-chamber, not shared -- chamber_id ties a rule to one
+row in chambers_service's chambers table. chamber_name is denormalized
+onto both alarm_rules and alarm_events at write time (same pattern
+annotations_service.py uses for its creator-name snapshot) so a rule's or
+event's chamber still displays correctly even if that chamber is later
+renamed or deleted.
 
 Runtime-only evaluation state (is it *currently* active right now, given
 the live samples flowing in) is NOT stored here -- see
-views/monitoring.py's _evaluate_alarms(), which keeps that in memory
-alongside each loaded rule dict and calls record_trigger()/record_clear()
-at the moments those transitions actually happen.
+services/chamber_session.py's ChamberSession._evaluate_alarms(), which
+keeps that in memory alongside each loaded rule dict and calls
+record_trigger()/record_clear() at the moments those transitions actually
+happen.
 """
 
 import sqlite3
@@ -70,6 +79,19 @@ def connect_alarms(db_path=None):
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_triggered_at ON alarm_events(triggered_at)")
+
+    rule_columns = {row["name"] for row in conn.execute("PRAGMA table_info(alarm_rules)")}
+    if "chamber_id" not in rule_columns:
+        conn.execute("ALTER TABLE alarm_rules ADD COLUMN chamber_id INTEGER")
+    if "chamber_name" not in rule_columns:
+        conn.execute("ALTER TABLE alarm_rules ADD COLUMN chamber_name TEXT")
+
+    event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(alarm_events)")}
+    if "chamber_id" not in event_columns:
+        conn.execute("ALTER TABLE alarm_events ADD COLUMN chamber_id INTEGER")
+    if "chamber_name" not in event_columns:
+        conn.execute("ALTER TABLE alarm_events ADD COLUMN chamber_name TEXT")
+
     conn.commit()
     return conn
 
@@ -92,6 +114,8 @@ def _rule_row(row):
         "enabled": bool(row["enabled"]),
         "created_by": row["created_by"],
         "created_at": row["created_at"],
+        "chamber_id": row["chamber_id"],
+        "chamber_name": row["chamber_name"],
     }
 
 
@@ -108,13 +132,23 @@ def _event_row(row):
         "acknowledged_at": row["acknowledged_at"],
         "acknowledged_by": row["acknowledged_by"],
         "comment": row["comment"],
+        "chamber_id": row["chamber_id"],
+        "chamber_name": row["chamber_name"],
     }
 
 
-def list_rules():
+def list_rules(chamber_id=None):
+    """chamber_id=None returns every rule regardless of chamber (used by
+    any future cross-chamber admin view); pass it to scope to one
+    chamber's rules -- this is what every chamber tab does."""
     conn = connect_alarms()
     try:
-        rows = conn.execute("SELECT * FROM alarm_rules ORDER BY id").fetchall()
+        if chamber_id is None:
+            rows = conn.execute("SELECT * FROM alarm_rules ORDER BY id").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM alarm_rules WHERE chamber_id = ? ORDER BY id", (chamber_id,)
+            ).fetchall()
         return [_rule_row(r) for r in rows]
     finally:
         conn.close()
@@ -130,6 +164,8 @@ def add_rule(
     deadband=0.0,
     delay_s=0.0,
     created_by="Unknown",
+    chamber_id=None,
+    chamber_name=None,
 ):
     conn = connect_alarms()
     try:
@@ -137,8 +173,8 @@ def add_rule(
             """
             INSERT INTO alarm_rules
                 (name, variable, condition, value, value2, severity, deadband, delay_s,
-                 enabled, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                 enabled, created_by, created_at, chamber_id, chamber_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
             """,
             (
                 str(name),
@@ -151,6 +187,8 @@ def add_rule(
                 float(delay_s or 0.0),
                 created_by or "Unknown",
                 _now(),
+                chamber_id,
+                chamber_name,
             ),
         )
         conn.commit()
@@ -172,14 +210,17 @@ def delete_rule(rule_id):
 def record_trigger(rule, trigger_value):
     """Inserts a new alarm_events row for a rule that just transitioned
     inactive -> active. Returns the new event's id (needed by
-    record_clear() later for this same episode)."""
+    record_clear() later for this same episode). chamber_id/chamber_name
+    are copied from the rule dict so the event still shows the right
+    chamber even if that chamber is later renamed or deleted."""
     conn = connect_alarms()
     try:
         cur = conn.execute(
             """
             INSERT INTO alarm_events
-                (rule_id, rule_name, variable, severity, trigger_value, triggered_at, comment)
-            VALUES (?, ?, ?, ?, ?, ?, '')
+                (rule_id, rule_name, variable, severity, trigger_value, triggered_at, comment,
+                 chamber_id, chamber_name)
+            VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 rule.get("id"),
@@ -188,6 +229,8 @@ def record_trigger(rule, trigger_value):
                 rule["severity"],
                 float(trigger_value) if trigger_value is not None else None,
                 _now(),
+                rule.get("chamber_id"),
+                rule.get("chamber_name"),
             ),
         )
         conn.commit()
@@ -223,12 +266,18 @@ def acknowledge_event(event_id, user_name, comment=""):
         conn.close()
 
 
-def list_events(limit=500):
+def list_events(limit=500, chamber_id=None):
     conn = connect_alarms()
     try:
-        rows = conn.execute(
-            "SELECT * FROM alarm_events ORDER BY triggered_at DESC LIMIT ?", (limit,)
-        ).fetchall()
+        if chamber_id is None:
+            rows = conn.execute(
+                "SELECT * FROM alarm_events ORDER BY triggered_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM alarm_events WHERE chamber_id = ? ORDER BY triggered_at DESC LIMIT ?",
+                (chamber_id, limit),
+            ).fetchall()
         return [_event_row(r) for r in rows]
     finally:
         conn.close()

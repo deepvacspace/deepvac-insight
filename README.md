@@ -58,6 +58,11 @@ for the full local dev-loop.
 uv run python main.py
 ```
 
+```powershell
+$env:DEEPVAC_SKIP_LICENSE_CHECK = "1"
+uv run python main.py
+```
+
 ## Building a distributable
 
 To hand this to someone without a Python/conda setup, freeze it with

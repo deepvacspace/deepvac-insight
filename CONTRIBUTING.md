@@ -26,10 +26,7 @@ uv run pytest
 
 `mypy` is currently scoped to five modules (`app/model/simulation.py`,
 `app/services/data_service.py`, `app/services/auth_service.py`,
-`app/services/backup_service.py`, `app/common.py`) rather than the whole
-codebase -- see `[tool.mypy]` in `pyproject.toml`. That list only grows
-deliberately; adding a module to it means fixing whatever mypy finds
-there.
+`app/services/backup_service.py`, `app/common.py`).
 
 ## Running specific test suites
 

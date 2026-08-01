@@ -221,6 +221,7 @@ class EditorGroup(QWidget):
     split_requested = Signal(object, str, str)  # self, direction, key
     group_empty = Signal(object)  # self
     tab_received = Signal(object, str, str)  # self, key, id (from drop)
+    page_closed = Signal(str)  # key -- emitted only for a real close (not take_page/move)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -314,6 +315,7 @@ class EditorGroup(QWidget):
     def _on_closed(self, index):
         key = self.tab_bar.key_at(index)
         if key:
+            self.page_closed.emit(key)
             self.remove_page(key)
 
     def _on_split(self, direction, index):
@@ -346,6 +348,7 @@ class EditorGroup(QWidget):
 
 class EditorArea(QWidget):
     active_page_changed = Signal(object)  # RunTabPage or None
+    page_closed = Signal(str)  # key -- bubbled from whichever group's tab was actually closed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -393,6 +396,7 @@ class EditorArea(QWidget):
         g.split_requested.connect(self._on_split_requested)
         g.group_empty.connect(self._on_group_empty)
         g.tab_received.connect(self._on_tab_received)
+        g.page_closed.connect(self._on_page_closed)
         g.tab_bar.get_other_groups = lambda: [x for x in self._groups if x is not g]
         self._groups.append(g)
         self._active_group = g
@@ -504,6 +508,15 @@ class EditorArea(QWidget):
         if self._active_group is group:
             self._active_group = self._groups[-1] if self._groups else None
         self.active_page_changed.emit(self.active_page())
+
+    def _on_page_closed(self, key):
+        # Also drop our own key -> (page, group) record, not just the
+        # group's -- open_run()'s "if key in self._pages" fast path would
+        # otherwise try to re-focus a page/group that no longer exists the
+        # next time the same key is opened (e.g. reconnecting a chamber
+        # whose tab was closed).
+        self._pages.pop(key, None)
+        self.page_closed.emit(key)
 
     def _on_tab_received(self, target_group, key, run_id):
         if key not in self._pages:

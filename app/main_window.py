@@ -13,9 +13,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.common import ICON_PATH, _nav_icon, _svg_icon
+from app.monitor_tab import MonitorTabPage
 from app.services import i18n_service, settings_service
+from app.services.chamber_session import MAX_CONNECTED_CHAMBERS, ChamberSession
 from app.services.opc_broadcast_server import OpcBroadcastServer
-from app.services.tcp_client import ChamberConnection
 from app.tab_system import EditorArea
 from app.title_bar import TitleBar
 from app.views.controller import ControllerMixin
@@ -57,21 +58,11 @@ class DeepVacDesktop(
         self._sim_anim_curves = []
         self._sim_anim_idx = 0
         self._sim_anim_total = 0
-        self._monitor_alarms = []
 
-        self._chamber_connected = False
-        self._chamber_last_seen = None  # UTC datetime of the last sample received, if any
-        self.tcp = ChamberConnection(self)
+        self._chamber_sessions = {}  # chamber id -> ChamberSession, see _connect_chamber()
         self.opc_server = OpcBroadcastServer(self)
 
         self._build_ui()
-
-        self.tcp.connected.connect(self._on_chamber_connected)
-        self.tcp.disconnected.connect(self._on_chamber_disconnected)
-        self.tcp.connection_error.connect(self._mon_on_error)
-        self.tcp.sample_received.connect(self._mon_on_sample)
-        self.tcp.sample_received.connect(self.opc_server.broadcast)
-        self.tcp.sample_received.connect(self._note_chamber_sample)
 
         self.apply_theme()
         self.load_runs()
@@ -91,28 +82,74 @@ class DeepVacDesktop(
         except Exception as exc:
             print(f"[backup] periodic backup skipped: {exc}")
 
-    # ── Chamber connection (shared by Live Monitoring + OPC Server) ────────────
+    # ── Chamber connections (shared by Live Monitoring, Controller, OPC Server) ─
+    #
+    # Up to MAX_CONNECTED_CHAMBERS ChamberSessions can be open at once, each
+    # owning one tab in self.monitor_editor_area (see views/monitoring.py).
+    # This is the one place that creates/destroys them so Controller
+    # (views/controller.py) and the OPC broadcast server can both reach
+    # whichever chambers are currently connected without owning the
+    # lifecycle themselves.
 
-    def _note_chamber_sample(self, sample):
-        from datetime import datetime, timezone
+    def _connect_chamber(self, chamber):
+        if chamber["id"] in self._chamber_sessions:
+            raise RuntimeError(self.tr("Already connected to this chamber."))
+        if len(self._chamber_sessions) >= MAX_CONNECTED_CHAMBERS:
+            raise RuntimeError(
+                self.tr("Up to {0} chambers can be connected at once.").format(
+                    MAX_CONNECTED_CHAMBERS
+                )
+            )
 
-        self._chamber_last_seen = datetime.now(timezone.utc)
+        session = ChamberSession(chamber, self)
+        self._chamber_sessions[chamber["id"]] = session
+        session.connected.connect(self._recompute_chamber_aggregate_status)
+        session.disconnected.connect(self._recompute_chamber_aggregate_status)
+        session.sample_received.connect(
+            lambda sample, s=session: self.opc_server.broadcast(s.chamber["name"], sample)
+        )
+        session.manual_state_changed.connect(
+            lambda s=session: self._on_controller_session_changed(s)
+        )
+        session.test_state_changed.connect(lambda s=session: self._on_controller_session_changed(s))
 
-    def _on_chamber_connected(self):
-        self._chamber_connected = True
-        self.title_bar.set_chamber_status(True)
-        self.title_bar.set_bell_active(True)
-        self._mon_set_connected(True)
-        self._opc_set_tcp_connected(True)
-        self._refresh_controller_chamber_status()
+        page = MonitorTabPage(session, current_user=self.current_user)
+        self.monitor_editor_area.open_run(f"chamber-{chamber['id']}", chamber["name"], page)
 
-    def _on_chamber_disconnected(self):
-        self._chamber_connected = False
-        self.title_bar.set_chamber_status(False)
-        self.title_bar.set_bell_active(False)
-        self._mon_set_connected(False)
-        self._opc_set_tcp_connected(False)
-        self._refresh_controller_chamber_status()
+        session.connect()
+        self._refresh_chamber_ui()
+        return session
+
+    def _disconnect_chamber(self, chamber_id):
+        session = self._chamber_sessions.pop(chamber_id, None)
+        if session is None:
+            return
+        session.teardown()
+        session.deleteLater()
+        self._refresh_chamber_ui()
+
+    def _connected_chamber_count(self):
+        return sum(1 for s in self._chamber_sessions.values() if s.is_connected())
+
+    def _any_chamber_connected(self):
+        return self._connected_chamber_count() > 0
+
+    def _refresh_chamber_ui(self):
+        """The one place that keeps every chamber-count-dependent widget in
+        sync after a session is added or removed -- called by both
+        _connect_chamber() and _disconnect_chamber() so callers (the
+        Monitoring page's Connect button, a tab's close button, tests) never
+        need to remember to refresh each page themselves."""
+        self._load_chamber_choices()
+        self._update_mon_count_label()
+        self._refresh_controller_chamber_choices()
+        self._recompute_chamber_aggregate_status()
+
+    def _recompute_chamber_aggregate_status(self):
+        count = self._connected_chamber_count()
+        self.title_bar.set_chamber_status(count, MAX_CONNECTED_CHAMBERS)
+        self.title_bar.set_bell_active(count > 0)
+        self._opc_set_chamber_connected(count > 0)
 
     # ── Persisted UI state ───────────────────────────────────────────────────
 
@@ -129,8 +166,8 @@ class DeepVacDesktop(
         self._persist_ui_state()
         if self.opc_server.is_running():
             self.opc_server.stop()
-        if self.tcp.is_connected():
-            self.tcp.disconnect_from_host()
+        for session in list(self._chamber_sessions.values()):
+            session.teardown()
         super().closeEvent(event)
 
     def _persist_ui_state(self):
@@ -785,10 +822,11 @@ class DeepVacDesktop(
         self.setStyleSheet(css)
         self.sim_chart.set_dark(self.dark)
         self.editor_area.update_theme(self.dark)
+        self.monitor_editor_area.update_theme(self.dark)
         dash_bg = "#111827" if self.dark else "#f8fafc"
-        for p in [self._dash_cost_plot, self._dash_ovr_plot]:
+        for p in [self._dash_mae_plot, self._dash_ovr_plot]:
             p.setBackground(dash_bg)
         self._rebuild_nav_icons(c)
         # _rebuild_nav_icons resets the bell to its neutral color; re-apply the
         # live chamber-connection indicator so a theme toggle doesn't lose it.
-        self.title_bar.set_bell_active(self._chamber_connected)
+        self.title_bar.set_bell_active(self._any_chamber_connected())

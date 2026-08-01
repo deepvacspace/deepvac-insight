@@ -2,8 +2,12 @@
 
 Backed by a real asyncua OPC UA server (app/services/opc_broadcast_server.py)
 that any standard OPC UA client can browse and subscribe to. It can only be
-started once the chamber connection (Live Monitoring) is established, since
-it broadcasts the samples that connection receives.
+started once at least one chamber connection (Live Monitoring) is
+established, since it broadcasts the samples those connections receive --
+one server, but every currently-connected chamber gets its own node under
+Objects/ChamberVariables/<chamber name>. It keeps running as more chambers
+connect or disconnect, and only stops automatically once the last one
+disconnects.
 """
 
 from PySide6.QtCore import Qt
@@ -36,9 +40,10 @@ class OpcMixin:
         outer.addWidget(hdr)
         sub = QLabel(
             self.tr(
-                "Broadcast live chamber data over a real OPC UA server. Requires an "
-                "active chamber connection (Live Monitoring); connect any OPC UA "
-                "client to browse and subscribe to the published variables."
+                "Broadcast every connected chamber's live data over a real OPC UA "
+                "server. Requires at least one active chamber connection (Live "
+                "Monitoring); connect any OPC UA client to browse and subscribe to "
+                "the published variables."
             )
         )
         sub.setObjectName("sectionLabel")
@@ -118,7 +123,7 @@ class OpcMixin:
         self._opc_start_btn = QPushButton(self.tr("Start Server"))
         self._opc_start_btn.setObjectName("primaryButton")
         self._opc_start_btn.setEnabled(False)
-        self._opc_start_btn.setToolTip(self.tr("Connect to the chamber in Live Monitoring first"))
+        self._opc_start_btn.setToolTip(self.tr("Connect a chamber in Live Monitoring first"))
         self._opc_start_btn.clicked.connect(self._on_opc_toggle)
         cl.addWidget(self._opc_start_btn)
 
@@ -175,12 +180,16 @@ class OpcMixin:
     def _on_opc_rate_changed(self, text):
         self.opc_server.set_update_rate(_OPC_RATE_MS.get(text, 500))
 
-    def _opc_set_tcp_connected(self, connected):
-        if not connected and self.opc_server.is_running():
+    def _opc_set_chamber_connected(self, any_connected):
+        """Called from main_window._recompute_chamber_aggregate_status()
+        with whether *any* chamber session is currently connected -- the
+        server only auto-stops once the last one drops, not on every
+        individual chamber's disconnect."""
+        if not any_connected and self.opc_server.is_running():
             self.opc_server.stop()
-        self._opc_start_btn.setEnabled(connected)
+        self._opc_start_btn.setEnabled(any_connected)
         self._opc_start_btn.setToolTip(
-            "" if connected else self.tr("Connect to the chamber in Live Monitoring first")
+            "" if any_connected else self.tr("Connect a chamber in Live Monitoring first")
         )
 
     def _on_opc_started(self, port):
@@ -231,8 +240,9 @@ class OpcMixin:
             + self.tr("Namespace: {0}").format(namespace)
             + "\n\n"
             + self.tr(
-                "Connect any OPC UA client (e.g. UAExpert) to this endpoint\n"
-                "and browse to Objects → ChamberVariables for the live values."
+                "Connect any OPC UA client (e.g. UAExpert) to this endpoint and browse "
+                "to Objects → ChamberVariables → <chamber name> for each connected "
+                "chamber's live values."
             )
         )
 
@@ -240,7 +250,7 @@ class OpcMixin:
         self._opc_info_lbl.setText(
             self.tr(
                 "Server not running\n\n"
-                "Connect to the chamber in Live Monitoring, then click\n"
+                "Connect a chamber in Live Monitoring, then click\n"
                 "Start Server to begin broadcasting its data."
             )
         )

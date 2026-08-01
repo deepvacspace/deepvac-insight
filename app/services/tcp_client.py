@@ -9,18 +9,8 @@ Outbound wire protocol (send_command(), used by Test Profiles --
 views/monitoring.py's step-sequencer): also newline-delimited JSON, one
 object per command, e.g. {"cmd": "set_point", "temperature": 60.0,
 "pressure": null, "step_index": 0, "step_label": "Ramp to 60C",
-"profile_name": "Soak Test A"}. This is this app's own outbound
-convention; whatever's listening on the other end (a real chamber
-controller or a test double) needs to parse and act on it -- nothing here
-verifies the chamber actually understood or applied a setpoint, only that
-the bytes were written to the socket.
+"profile_name": "Soak Test A"}.
 
-Built on QTcpSocket rather than a raw socket + thread: Qt delivers socket
-events (connected/disconnected/data ready) as signals on the existing Qt
-event loop, so no extra thread or manual synchronization is needed here.
-
-See tcp/dummy_chamber_server.py (gitignored, a local dev/test tool, not
-part of the shipped app) for a server that speaks this same protocol.
 """
 
 import json

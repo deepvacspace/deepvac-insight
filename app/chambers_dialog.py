@@ -22,7 +22,7 @@ from app.services import chambers_service
 class ChambersDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.changed = False  # caller checks this to know whether to reload
+        self.changed = False
         self._editing_id = None
 
         self.setWindowTitle(self.tr("Manage Chambers"))
@@ -35,8 +35,8 @@ class ChambersDialog(QDialog):
 
         info = QLabel(
             self.tr(
-                "Saved chambers you can pick from in Live Monitoring instead of typing "
-                "a host/port each time. Double-click one below to edit it."
+                "Saved chambers you can pick from in Live Monitoring."
+                " Double-click one below to edit it."
             )
         )
         info.setWordWrap(True)

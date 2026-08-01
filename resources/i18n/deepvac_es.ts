@@ -129,8 +129,8 @@
     </message>
     <message>
         <location filename="../../app/views/dashboard.py" line="52" />
-        <source>COST OVER RUNS</source>
-        <translation>COSTO POR EJECUCIÓN</translation>
+        <source>PERFORMANCE TREND — TAIL MAE OVER RUNS</source>
+        <translation>TENDENCIA DE RENDIMIENTO — MAE DE COLA POR EJECUCIÓN</translation>
     </message>
     <message>
         <location filename="../../app/views/dashboard.py" line="53" />
@@ -139,8 +139,13 @@
     </message>
     <message>
         <location filename="../../app/views/dashboard.py" line="54" />
-        <source>OVERSHOOT vs COST</source>
-        <translation>SOBREIMPULSO vs COSTO</translation>
+        <source>OVERSHOOT vs TAIL MAE</source>
+        <translation>SOBREIMPULSO vs MAE DE COLA</translation>
+    </message>
+    <message>
+        <location filename="../../app/views/dashboard.py" line="288" />
+        <source>Best Runs (By Tail MAE)</source>
+        <translation>Mejores ejecuciones (por MAE de cola)</translation>
     </message>
     <message>
         <location filename="../../app/views/dashboard.py" line="76" />
@@ -176,12 +181,6 @@
         <location filename="../../app/views/dashboard.py" line="116" />
         <source>Run (oldest → newest)</source>
         <translation>Ejecución (más antigua → más reciente)</translation>
-    </message>
-    <message>
-        <location filename="../../app/views/dashboard.py" line="117" />
-        <location filename="../../app/views/dashboard.py" line="138" />
-        <source>Cost</source>
-        <translation>Costo</translation>
     </message>
     <message>
         <location filename="../../app/views/dashboard.py" line="127" />

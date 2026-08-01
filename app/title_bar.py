@@ -44,7 +44,7 @@ class TitleBar(QWidget):
         lay.addStretch(1)
 
         self.status_chamber = self._status_pill(
-            "broadcast", self.tr("Chamber Offline"), "#ef4444", "statusText"
+            "broadcast", self.tr("Chambers Offline"), "#ef4444", "statusText"
         )
         lay.addWidget(self.status_chamber)
         lay.addSpacing(4)
@@ -97,11 +97,14 @@ class TitleBar(QWidget):
         pill._txt = txt
         return pill
 
-    def set_chamber_status(self, online):
+    def set_chamber_status(self, connected_count, total):
+        online = connected_count > 0
         color = "#22c55e" if online else "#ef4444"
         self.status_chamber._icon.setPixmap(_render_svg("broadcast", color, 14))
         self.status_chamber._txt.setText(
-            self.tr("Chamber Online") if online else self.tr("Chamber Offline")
+            self.tr("{0}/{1} Chambers Online").format(connected_count, total)
+            if online
+            else self.tr("Chambers Offline")
         )
 
     def set_bell_active(self, active):

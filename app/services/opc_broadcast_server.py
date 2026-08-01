@@ -1,4 +1,5 @@
-"""A real OPC UA server broadcasting live chamber variables.
+"""A real OPC UA server broadcasting every currently-connected chamber's
+live variables.
 
 Backed by asyncua: a spec-compliant OPC UA server that any standard OPC UA
 client (UAExpert, an asyncua/python-opcua client, etc.) can browse and
@@ -6,12 +7,16 @@ subscribe to -- not just an app-specific wire format.
 
 asyncua is asyncio-native and this app runs on Qt's event loop, so the
 server runs on its own thread with its own asyncio event loop. Samples
-arrive on the Qt thread (ChamberConnection.sample_received, see
-tcp_client.py -- wired to broadcast() in main_window.py) and are handed to
-the asyncio thread with asyncio.run_coroutine_threadsafe(); all node access
-happens on the server thread, never on the Qt thread. Each distinct sample
-key becomes an OPC UA variable node the first time it's seen, under
-<namespace>/Objects/ChamberVariables, and is updated in place after that.
+arrive on the Qt thread (one ChamberSession.sample_received per connected
+chamber, see services/chamber_session.py -- wired to broadcast() in
+main_window.py) and are handed to the asyncio thread with
+asyncio.run_coroutine_threadsafe(); all node access happens on the server
+thread, never on the Qt thread. Each connected chamber gets its own
+sub-object node under <namespace>/Objects/ChamberVariables/<chamber name>,
+created the first time a sample from that chamber is seen; each distinct
+sample key becomes a variable node under that chamber's object, updated in
+place after that. One server instance broadcasts every chamber currently
+connected -- there is no per-chamber server.
 
 Security: only SecurityPolicyType.NoSecurity / anonymous auth is offered.
 Basic128Rsa15/Basic256Sha256 and username+password auth need a certificate
@@ -46,14 +51,15 @@ class OpcBroadcastServer(QObject):
         self._start_error = None
         self._idx = None
         self._obj_node = None
-        self._var_nodes = {}
+        self._chamber_nodes = {}  # chamber_label -> object node under ChamberVariables
+        self._var_nodes = {}  # (chamber_label, key) -> variable node
         self._running = threading.Event()
         self._last_client_count = 0
 
-        self._pending_sample = None
+        self._pending_samples = {}  # chamber_label -> latest sample, flushed on the timer below
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(500)
-        self._update_timer.timeout.connect(self._flush_pending_sample)
+        self._update_timer.timeout.connect(self._flush_pending_samples)
 
     def is_running(self):
         return self._running.is_set()
@@ -70,8 +76,9 @@ class OpcBroadcastServer(QObject):
         self.namespace = namespace or "urn:deepvac:opc:server"
         self._port = int(port)
         self._stop_event = threading.Event()
+        self._chamber_nodes = {}
         self._var_nodes = {}
-        self._pending_sample = None
+        self._pending_samples = {}
         self._last_client_count = 0
 
         ready = threading.Event()
@@ -105,23 +112,26 @@ class OpcBroadcastServer(QObject):
             self._thread.join(timeout=5)
         self._thread = None
         self._loop = None
+        self._chamber_nodes = {}
         self._var_nodes = {}
-        self._pending_sample = None
+        self._pending_samples = {}
         self._last_client_count = 0
         self.stopped.emit()
         self.client_count_changed.emit(0)
 
-    def broadcast(self, sample: dict):
-        # Called on the Qt thread every time a sample arrives; just cache
-        # it. _flush_pending_sample(), driven by the QTimer above (i.e. the
-        # configured update rate), is what actually pushes it to the nodes.
-        self._pending_sample = sample
+    def broadcast(self, chamber_label: str, sample: dict):
+        # Called on the Qt thread every time a sample arrives for a given
+        # chamber; just cache it. _flush_pending_samples(), driven by the
+        # QTimer above (i.e. the configured update rate), is what actually
+        # pushes it to that chamber's nodes.
+        self._pending_samples[chamber_label] = sample
 
-    def _flush_pending_sample(self):
-        sample, self._pending_sample = self._pending_sample, None
-        if sample is None or not self.is_running() or self._loop is None:
+    def _flush_pending_samples(self):
+        pending, self._pending_samples = self._pending_samples, {}
+        if not pending or not self.is_running() or self._loop is None:
             return
-        asyncio.run_coroutine_threadsafe(self._write_sample(sample), self._loop)
+        for chamber_label, sample in pending.items():
+            asyncio.run_coroutine_threadsafe(self._write_sample(chamber_label, sample), self._loop)
 
     # ── Server thread (asyncio) ─────────────────────────────────────────────
 
@@ -160,16 +170,22 @@ class OpcBroadcastServer(QObject):
             self._last_client_count = count
             self.client_count_changed.emit(count)
 
-    async def _write_sample(self, sample: dict):
+    async def _write_sample(self, chamber_label: str, sample: dict):
+        chamber_node = self._chamber_nodes.get(chamber_label)
+        if chamber_node is None:
+            chamber_node = await self._obj_node.add_object(self._idx, chamber_label)
+            self._chamber_nodes[chamber_label] = chamber_node
+
         for key, raw_value in sample.items():
             value = self._coerce(raw_value)
             if value is None:
                 continue
-            node = self._var_nodes.get(key)
+            node_key = (chamber_label, key)
+            node = self._var_nodes.get(node_key)
             if node is None:
-                node = await self._obj_node.add_variable(self._idx, key, value)
+                node = await chamber_node.add_variable(self._idx, key, value)
                 await node.set_writable(False)
-                self._var_nodes[key] = node
+                self._var_nodes[node_key] = node
             else:
                 with contextlib.suppress(ua.UaError):
                     await node.write_value(value)
