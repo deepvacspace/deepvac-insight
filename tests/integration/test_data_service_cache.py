@@ -380,13 +380,6 @@ def test_save_monitoring_session_is_never_pruned_by_sync_cache(deepvac_data_dir,
     assert result["runs"][0]["source"] == "monitoring"
 
 
-def test_save_monitoring_session_records_quality_issues(deepvac_data_dir):
-    samples = [{"timestamp": "1700000000", "temp": "oops"}] * 1
-    result = data_service.save_monitoring_session("live-test", samples)
-    payload = data_service.cached_run_payload(result["key"])
-    assert isinstance(payload["quality"], list)
-
-
 def test_schema_migration_adds_source_column_to_pre_existing_table(deepvac_data_dir):
     # Characterizes the in-place ALTER TABLE migration: a "runs" table
     # created without the `source` column (as an older cache file would

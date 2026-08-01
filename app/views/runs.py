@@ -141,24 +141,7 @@ class RunsMixin:
             haystack = " ".join(str(v) for v in run.values()).lower()
             if query and query not in haystack:
                 continue
-            label = run["id"]
-            errors = run.get("quality_errors", 0)
-            warnings = run.get("quality_warnings", 0)
-            if errors:
-                label = f"⛔ {label}"
-                tooltip = self.tr("{0} data quality error(s) — right-click for details").format(
-                    errors + warnings
-                )
-            elif warnings:
-                label = f"⚠ {label}"
-                tooltip = self.tr("{0} data quality warning(s) — right-click for details").format(
-                    warnings
-                )
-            else:
-                tooltip = ""
-            item = QListWidgetItem(label)
-            if tooltip:
-                item.setToolTip(tooltip)
+            item = QListWidgetItem(run["id"])
             item.setData(Qt.UserRole, run["key"])
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if run["key"] in compare_keys else Qt.Unchecked)
@@ -174,47 +157,15 @@ class RunsMixin:
         if not item:
             return
         key = item.data(Qt.UserRole)
-        run = next((r for r in self.runs if r["key"] == key), None)
         menu = QMenu(self)
         act_open = menu.addAction(self.tr("Open in Analysis"))
         act_rename = menu.addAction(self.tr("Rename…"))
-        act_quality = None
-        if run and (run.get("quality_errors") or run.get("quality_warnings")):
-            act_quality = menu.addAction(self.tr("View Data Quality Report…"))
         chosen = menu.exec(self.run_list.viewport().mapToGlobal(pos))
         if chosen == act_open:
             self._open_run(key)
             self._nav_to(2)
         elif chosen == act_rename:
             self._rename_run(key)
-        elif act_quality is not None and chosen == act_quality:
-            self._show_quality_report(key)
-
-    def _show_quality_report(self, key):
-        from PySide6.QtWidgets import QMessageBox
-
-        run = next((r for r in self.runs if r["key"] == key), None)
-        try:
-            detail = data.run_detail(key)
-        except Exception as exc:
-            QMessageBox.critical(self, self.tr("Data quality report"), str(exc))
-            return
-        issues = detail.get("quality", [])
-        if not issues:
-            QMessageBox.information(
-                self, self.tr("Data quality report"), self.tr("No data quality issues found.")
-            )
-            return
-        lines = []
-        for issue in issues:
-            marker = "⛔" if issue["severity"] == "error" else "⚠"
-            lines.append(f"{marker} {issue['message']}")
-        title = run["id"] if run else key
-        QMessageBox.warning(
-            self,
-            self.tr("Data quality report — {0}").format(title),
-            "\n\n".join(lines),
-        )
 
     def _rename_run(self, key):
         from PySide6.QtWidgets import QInputDialog, QMessageBox
@@ -321,14 +272,6 @@ class RunsMixin:
         message = QCoreApplication.translate(
             "RunsMixin", "Imported %n run(s) into the database.", "", n
         )
-        flagged = [
-            r for r in result["imported"] if r.get("quality_errors") or r.get("quality_warnings")
-        ]
-        if flagged:
-            message += "\n\n" + self.tr(
-                "{0} of {1} run(s) have data quality issues -- right-click a run in the "
-                "list for details."
-            ).format(len(flagged), n)
         QMessageBox.information(self, self.tr("Upload complete"), message)
 
     def _upload_failed(self, msg):

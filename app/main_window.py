@@ -676,18 +676,6 @@ class DeepVacDesktop(
                 background: {c["accent2"]}; color: {c["atext"]}; border-color: {c["accent2"]};
             }}
             QPushButton#dashRangeBtn:hover {{ color: {c["text"]}; }}
-            QLabel#statusCompleted {{
-                background: rgba(34, 197, 94, 0.16); color: #22c55e;
-                border-radius: 5px; padding: 2px 8px; font-weight: 700; font-size: 10px;
-            }}
-            QLabel#statusWarning {{
-                background: rgba(242, 189, 82, 0.18); color: #f2bd52;
-                border-radius: 5px; padding: 2px 8px; font-weight: 700; font-size: 10px;
-            }}
-            QLabel#statusAnomaly {{
-                background: rgba(239, 68, 68, 0.16); color: #ef4444;
-                border-radius: 5px; padding: 2px 8px; font-weight: 700; font-size: 10px;
-            }}
             QLineEdit, QComboBox {{
                 background: {c["panel2"]}; color: {c["text"]};
                 border: 1px solid {c["border"]}; border-radius: 8px;

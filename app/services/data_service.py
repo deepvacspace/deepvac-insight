@@ -12,7 +12,6 @@ from typing import cast
 from PySide6.QtCore import QCoreApplication
 
 from app.common import DATA_DIR
-from app.services import data_quality
 
 SAMPLES_FILE = "run_samples.csv"
 SUMMARY_FILE = "run_summary.csv"
@@ -192,8 +191,6 @@ def connect_cache(db_path=None):
     existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
     if "source" not in existing_columns:
         conn.execute("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'folder'")
-    if "quality_json" not in existing_columns:
-        conn.execute("ALTER TABLE runs ADD COLUMN quality_json TEXT NOT NULL DEFAULT '[]'")
     if "chamber" not in existing_columns:
         # Nullable, no default: only source='monitoring' rows are ever
         # tagged with the chamber that was connected when they were
@@ -232,7 +229,6 @@ def cache_record_for(samples_path, key=None, group=None):
     columns = list(samples[0].keys()) if samples else []
     numeric = numeric_columns(samples)
     annotations = run_annotations(samples, summary, bands)
-    quality = data_quality.validate_samples(samples, numeric)
     return {
         "record": record,
         "run_path": str(path),
@@ -244,7 +240,6 @@ def cache_record_for(samples_path, key=None, group=None):
         "bands": bands,
         "annotations": annotations,
         "samples_rows": samples,
-        "quality": quality,
     }
 
 
@@ -282,8 +277,8 @@ def sync_cache(progress=None):
                     samples, duration_s, mae, cost, tail_mae, overshoot, settle_time_s,
                     start_time, end_time, columns_json, numeric_columns_json,
                     summary_json, bands_json, annotations_json, samples_json, source,
-                    quality_json, chamber, test_profile, cached_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'folder', ?, NULL, NULL, datetime('now'))
+                    chamber, test_profile, cached_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'folder', NULL, NULL, datetime('now'))
                 """,
                 (
                     record["key"],
@@ -308,7 +303,6 @@ def sync_cache(progress=None):
                     json.dumps(cached["bands"]),
                     json.dumps(cached["annotations"]),
                     json.dumps(cached["samples_rows"]),
-                    json.dumps(cached["quality"]),
                 ),
             )
             if index % 25 == 0:
@@ -338,7 +332,7 @@ def load_cached_runs():
         rows = conn.execute(
             """
             SELECT key, id, group_name, samples, duration_s, mae, cost, tail_mae,
-                   overshoot, settle_time_s, start_time, end_time, source, quality_json,
+                   overshoot, settle_time_s, start_time, end_time, source,
                    chamber, test_profile
             FROM runs
             ORDER BY source_mtime DESC
@@ -346,7 +340,6 @@ def load_cached_runs():
         ).fetchall()
         result = []
         for row in rows:
-            errors, warnings = data_quality.summarize(json.loads(row["quality_json"]))
             result.append(
                 {
                     "key": row["key"],
@@ -362,8 +355,6 @@ def load_cached_runs():
                     "start_time": row["start_time"],
                     "end_time": row["end_time"],
                     "source": row["source"],
-                    "quality_errors": errors,
-                    "quality_warnings": warnings,
                     "chamber": row["chamber"],
                     "test_profile": row["test_profile"],
                 }
@@ -448,8 +439,8 @@ def upload_runs(paths, progress=None):
                     samples, duration_s, mae, cost, tail_mae, overshoot, settle_time_s,
                     start_time, end_time, columns_json, numeric_columns_json,
                     summary_json, bands_json, annotations_json, samples_json, source,
-                    quality_json, chamber, test_profile, cached_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', ?, NULL, NULL, datetime('now'))
+                    chamber, test_profile, cached_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', NULL, NULL, datetime('now'))
                 """,
                 (
                     record["key"],
@@ -474,11 +465,9 @@ def upload_runs(paths, progress=None):
                     json.dumps(cached["bands"]),
                     json.dumps(cached["annotations"]),
                     json.dumps(cached["samples_rows"]),
-                    json.dumps(cached["quality"]),
                 ),
             )
-            errors, warnings = data_quality.summarize(cached["quality"])
-            imported.append({**record, "quality_errors": errors, "quality_warnings": warnings})
+            imported.append(record)
             if index % 10 == 0:
                 conn.commit()
         conn.commit()
@@ -508,7 +497,6 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
 
     columns = list(samples[0].keys())
     numeric = numeric_columns(samples)
-    quality = data_quality.validate_samples(samples, numeric)
     annotations = run_annotations(samples, {}, [])
 
     timestamps = [to_float(row.get("timestamp")) for row in samples]
@@ -527,9 +515,9 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
                 samples, duration_s, mae, cost, tail_mae, overshoot, settle_time_s,
                 start_time, end_time, columns_json, numeric_columns_json,
                 summary_json, bands_json, annotations_json, samples_json, source,
-                quality_json, chamber, test_profile, cached_at
+                chamber, test_profile, cached_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?,
-                      'monitoring', ?, ?, ?, datetime('now'))
+                      'monitoring', ?, ?, datetime('now'))
             """,
             (
                 key,
@@ -549,7 +537,6 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
                 json.dumps([]),
                 json.dumps(annotations),
                 json.dumps(samples),
-                json.dumps(quality),
                 chamber,
                 test_profile,
             ),
@@ -610,7 +597,6 @@ def cached_run_payload(run_id):
             "columns": json.loads(row["columns_json"]),
             "numeric_columns": json.loads(row["numeric_columns_json"]),
             "samples_rows": json.loads(row["samples_json"]),
-            "quality": json.loads(row["quality_json"]),
         }
     finally:
         conn.close()
@@ -798,7 +784,6 @@ def run_detail(run_id):
             "annotations": cached["annotations"],
             "columns": cached["columns"],
             "numeric_columns": cached["numeric_columns"],
-            "quality": cached["quality"],
         }
 
     path = run_dir(run_id)
@@ -813,7 +798,6 @@ def run_detail(run_id):
         "annotations": run_annotations(samples, summary, bands),
         "columns": list(samples[0].keys()) if samples else [],
         "numeric_columns": numeric,
-        "quality": data_quality.validate_samples(samples, numeric),
     }
 
 

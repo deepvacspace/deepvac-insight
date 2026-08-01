@@ -1,14 +1,10 @@
 """DashboardMixin — builds and refreshes the Dashboard page.
 
-Two filtering tiers, matching the convention already used by
-views/reports.py's status filter: the Date Range control affects
-everything on the page (stat tiles, charts, insights, best-runs, the
-table); Status only narrows the Recent Runs table itself, so it never
-blanks out the page's summary numbers.
-
-Chamber and Test Profile are real filters, same tier as Status
-(table-only, not page-wide): both are per-run tags set only on runs saved
-via "Save Session as Run" in Live Monitoring (see
+Two filtering tiers: the Date Range control affects everything on the
+page (stat tiles, charts, insights, best-runs, the table); Chamber and
+Test Profile only narrow the Recent Runs table itself, so they never
+blank out the page's summary numbers. Both are per-run tags set only on
+runs saved via "Save Session as Run" in Live Monitoring (see
 data_service.save_monitoring_session()'s chamber/test_profile parameters)
 -- folder/upload-sourced runs simply have neither tag, which is correct
 (they didn't come from a chamber connection or a test profile run).
@@ -55,14 +51,6 @@ def _parse_start_time(value):
         return datetime.strptime(value, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
-
-
-def _run_status(run):
-    if run.get("quality_errors"):
-        return "Anomaly"
-    if run.get("quality_warnings"):
-        return "Warning"
-    return "Completed"
 
 
 def _time_ago(dt):
@@ -159,15 +147,6 @@ class DashboardMixin:
         self._dash_profile_combo.setToolTip(self.tr("Test Profile"))
         self._dash_profile_combo.currentIndexChanged.connect(self._dash_refresh_table)
         filt_row.addWidget(self._dash_profile_combo)
-
-        self._dash_status_combo = QComboBox()
-        self._dash_status_combo.addItem(self.tr("All Statuses"), "All")
-        self._dash_status_combo.addItem(self.tr("Completed"), "Completed")
-        self._dash_status_combo.addItem(self.tr("Warning"), "Warning")
-        self._dash_status_combo.addItem(self.tr("Anomaly"), "Anomaly")
-        self._dash_status_combo.setToolTip(self.tr("Status"))
-        self._dash_status_combo.currentIndexChanged.connect(self._dash_refresh_table)
-        filt_row.addWidget(self._dash_status_combo)
 
         refresh_btn = QPushButton()
         refresh_btn.setIcon(_svg_icon("arrow-counterclockwise", "#94a3b8", 15))
@@ -390,11 +369,6 @@ class DashboardMixin:
 
     def _dash_table_filtered(self):
         rows = self._dash_range_filtered()
-        status = (
-            self._dash_status_combo.currentData() if hasattr(self, "_dash_status_combo") else "All"
-        )
-        if status and status != "All":
-            rows = [r for r in rows if _run_status(r) == status]
         chamber = (
             self._dash_chamber_combo.currentData() if hasattr(self, "_dash_chamber_combo") else None
         )
@@ -457,7 +431,7 @@ class DashboardMixin:
         )
         if not path:
             return
-        fields = ["id", "group", "status", "tail_mae", "overshoot", "start_time"]
+        fields = ["id", "group", "tail_mae", "overshoot", "start_time"]
         try:
             with open(path, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -467,7 +441,6 @@ class DashboardMixin:
                         [
                             r.get("id"),
                             r.get("group"),
-                            _run_status(r),
                             r.get("tail_mae"),
                             r.get("overshoot"),
                             r.get("start_time"),
@@ -485,8 +458,7 @@ class DashboardMixin:
     def _dash_refresh_filter_choices(self):
         """Repopulates the Chamber/Test Profile combos with whatever
         distinct values actually appear in self.runs, preserving the
-        current selection if it's still present -- these are dynamic,
-        data-derived filters, unlike Status's fixed set of choices."""
+        current selection if it's still present."""
         for combo, key, all_label in [
             (self._dash_chamber_combo, "chamber", self.tr("All Chambers")),
             (self._dash_profile_combo, "test_profile", self.tr("All Test Profiles")),
@@ -758,67 +730,33 @@ class DashboardMixin:
         cols = [
             self.tr("Run ID"),
             self.tr("Group"),
-            self.tr("Status"),
             self.tr("Tail MAE"),
             self.tr("Overshoot"),
             self.tr("Date"),
         ]
-        # Display text is translated; the dict's own keys stay the stable
-        # English values _run_status() returns, same convention reports.py
-        # uses for its Ready/Missing status labels.
-        status_labels = {
-            "Completed": self.tr("Completed"),
-            "Warning": self.tr("Warning"),
-            "Anomaly": self.tr("Anomaly"),
-        }
         table = self._dash_table
         table.setUpdatesEnabled(False)
-        # clearContents() (not just setRowCount()) is what actually removes
-        # previously-set cell widgets -- the Status column's badges are
-        # QWidgets via setCellWidget(), and re-running this with the same
-        # row count would otherwise leave stale badges behind, overlapping
-        # the freshly-set ones.
         table.clearContents()
         table.setColumnCount(len(cols))
         table.setRowCount(len(page_rows))
         table.setHorizontalHeaderLabels(cols)
         for ri, r in enumerate(page_rows):
-            status = _run_status(r)
             date_str = (r.get("start_time") or "-").split(" ")[
                 0
             ]  # just the date; the full "YYYY-MM-DD HH:MM:SS UTC" doesn't fit the column
             values = [
                 r.get("id", ""),
                 r.get("group", "-"),
-                None,
                 fmt(r.get("tail_mae")),
                 fmt(r.get("overshoot")),
                 date_str,
             ]
             for ci, v in enumerate(values):
-                if ci == 2:
-                    badge = QLabel(status_labels.get(status, status))
-                    badge.setObjectName(f"status{status}")
-                    badge.setAlignment(Qt.AlignCenter)
-                    badge.setMinimumWidth(78)
-                    wrap = QWidget()
-                    wl = QHBoxLayout(wrap)
-                    wl.setContentsMargins(4, 2, 4, 2)
-                    wl.addWidget(badge)
-                    wl.addStretch(1)
-                    table.setCellWidget(ri, ci, wrap)
-                    item = QTableWidgetItem("")
-                else:
-                    item = QTableWidgetItem(str(v))
+                item = QTableWidgetItem(str(v))
                 if ci == 0:
                     item.setData(Qt.UserRole, r["key"])
                 table.setItem(ri, ci, item)
         table.resizeColumnsToContents()
-        # resizeColumnsToContents() only measures QTableWidgetItem text, not
-        # the cell widgets set via setCellWidget() above -- the Status
-        # column's item text is empty, so without this it shrinks to the
-        # header width and clips the status badge.
-        table.setColumnWidth(2, 96)
         table.setUpdatesEnabled(True)
 
         shown_from = 0 if total == 0 else start + 1
@@ -880,22 +818,6 @@ class DashboardMixin:
         self._dash_clear_insights()
         rows = self._dash_range_filtered()
 
-        flagged = [r for r in rows if r.get("quality_errors") or r.get("quality_warnings")]
-        error_count = sum(1 for r in rows if r.get("quality_errors"))
-        if flagged:
-            self._dash_insights_lay.addWidget(
-                self._dash_insight_row(
-                    "bell",
-                    "#f2bd52",
-                    self.tr("Data Quality Issues"),
-                    self.tr("{0} run(s) have data-quality warnings or errors.").format(
-                        len(flagged)
-                    ),
-                    self.tr("Review"),
-                    lambda: self._dash_set_status_filter("Anomaly" if error_count else "Warning"),
-                )
-            )
-
         missing = [r for r in rows if not _has_report(r)]
         if missing:
             self._dash_insights_lay.addWidget(
@@ -913,13 +835,13 @@ class DashboardMixin:
         alert_row = self._dash_recent_alert_row()
         self._dash_insights_lay.addWidget(alert_row)
 
-        if not flagged and not missing:
+        if not missing:
             self._dash_insights_lay.addWidget(
                 self._dash_insight_row(
                     "check-circle",
                     "#22c55e",
                     self.tr("All clear"),
-                    self.tr("No data-quality issues or missing reports in this range."),
+                    self.tr("No missing reports in this range."),
                 )
             )
 
@@ -953,9 +875,3 @@ class DashboardMixin:
 
         dlg = AlarmHistoryDialog(current_user=self.current_user, parent=self)
         dlg.exec()
-
-    def _dash_set_status_filter(self, status):
-        idx = self._dash_status_combo.findData(status)
-        if idx >= 0:
-            self._dash_status_combo.setCurrentIndex(idx)
-        self._nav_to(1)
