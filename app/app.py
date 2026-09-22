@@ -62,27 +62,19 @@ def _remembered_user():
 
 
 def _ensure_license_activated(app):
-    """Cloud-licensing gate: this installation must hold a valid signed
-    license certificate before normal use, obtained via the hub's
-    browser-based device-code activation flow (see
-    app/services/licensing_client.py and the sibling `hub` repo's
-    docs/sequences.md) -- never a username/password prompt in-app.
-
-    Returns True if licensed (already cached and still valid, or freshly
-    activated in this run), False if the user quit or activation failed.
-
-    DEEPVAC_SKIP_LICENSE_CHECK=1 bypasses this entirely, for development
-    work that has nothing to do with licensing and no hub instance running.
-    """
+    """Ensures this installation holds a valid license, running the
+    activation flow if needed. Returns (licensed, activated_account)."""
     if os.environ.get("DEEPVAC_SKIP_LICENSE_CHECK"):
-        return True
+        return True, None
     if licensing_client.has_valid_local_license():
-        return True
+        return True, None
 
     activation = LicenseActivationWindow()
     activation.show()
     app.exec()
-    return activation.activated_license is not None
+    if activation.activated_license is None:
+        return False, None
+    return True, activation.activated_account
 
 
 def _show_splash(app, window_receiver_attr_name=None):
@@ -98,24 +90,10 @@ def _show_splash(app, window_receiver_attr_name=None):
 
 
 def _run_smoke_test(no_splash=False):
-    """Exercise the real startup path end to end, then exit automatically.
-
-    Used by CI / packaging checks to catch "won't even start" regressions
-    (bad imports, a bootstrap-time exception, a missing bundled resource)
-    without a human watching it launch. Deliberately does NOT go through
-    LoginWindow -- that's an interactive, credential-requiring modal, and
-    a smoke test must need neither a human nor an existing account -- so
-    it constructs DeepVacDesktop directly with a throwaway in-memory user.
-    No real chamber/OPC connection is ever attempted here: those only start
-    from an explicit Connect/Start click in Live Monitoring/OPC Server,
-    never from construction or restore_window_state().
-    """
+    """Runs the startup path headlessly and exits, for CI smoke checks."""
     failure = {}
 
     def on_exception(exc_type, exc_value, exc_tb):
-        # sys.excepthook fires for exceptions raised inside Qt signal/slot
-        # callbacks too, which otherwise wouldn't propagate to the try/except
-        # below -- this is what lets those still fail the smoke test.
         failure.setdefault("exc", (exc_type, exc_value))
 
     log_service.install_excepthook(show_dialog=False)
@@ -156,6 +134,22 @@ def _run_smoke_test(no_splash=False):
     return 0
 
 
+def _link_activation_account(user, activated_account):
+    """Attaches a freshly-activated hub account to a local profile, if any."""
+    if activated_account is None or user.get("hub_user_id"):
+        return user
+    try:
+        return auth_service.link_hub_account(
+            user["id"],
+            hub_user_id=activated_account["user_id"],
+            hub_email=activated_account["email"],
+            hub_org_id=activated_account["organization_id"],
+            hub_org_name=activated_account["organization_name"],
+        )
+    except auth_service.AuthError:
+        return user
+
+
 def main():
     args = sys.argv[1:]
     if "--smoke-test" in args:
@@ -174,10 +168,14 @@ def main():
     except Exception as exc:
         print(f"[backup] startup backup skipped: {exc}")
 
-    if not _ensure_license_activated(app):
+    licensed, activated_account = _ensure_license_activated(app)
+    if not licensed:
         sys.exit(0)
 
     user = _remembered_user()
+    if user is not None:
+        user = _link_activation_account(user, activated_account)
+        activated_account = None
 
     while True:
         if user is None:
@@ -187,6 +185,8 @@ def main():
             user = login.authenticated_user
             if user is None:
                 sys.exit(0)
+            user = _link_activation_account(user, activated_account)
+            activated_account = None
 
         splash = None if no_splash else _show_splash(app)
 

@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.services import chambers_service
+from app.services import chamber_sync_service as sync_service
+from app.services import chambers_service, licensing_client
 
 
 class ChambersDialog(QDialog):
@@ -71,11 +72,14 @@ class ChambersDialog(QDialog):
         self._delete_btn.clicked.connect(self._delete_selected)
         cancel_edit_btn = QPushButton(self.tr("Cancel Edit"))
         cancel_edit_btn.clicked.connect(self._reset_form)
+        sync_btn = QPushButton(self.tr("Sync with Hub"))
+        sync_btn.clicked.connect(self._sync_with_hub)
         close_btn = QPushButton(self.tr("Close"))
         close_btn.clicked.connect(self.accept)
         button_row.addWidget(self._save_btn)
         button_row.addWidget(self._delete_btn)
         button_row.addWidget(cancel_edit_btn)
+        button_row.addWidget(sync_btn)
         button_row.addStretch(1)
         button_row.addWidget(close_btn)
         root.addLayout(button_row)
@@ -128,3 +132,48 @@ class ChambersDialog(QDialog):
             self._reset_form()
         self.changed = True
         self._refresh_list()
+
+    def _sync_with_hub(self):
+        try:
+            result = sync_service.sync()
+        except (sync_service.SyncError, licensing_client.LicensingError) as exc:
+            QMessageBox.warning(self, self.tr("Sync with Hub"), str(exc))
+            return
+
+        for conflict in result.conflicts:
+            self._resolve_conflict(conflict)
+
+        self.changed = True
+        self._reset_form()
+        self._refresh_list()
+
+        summary = self.tr("Pushed {0}, pulled {1}.").format(len(result.pushed), len(result.pulled))
+        if result.errors:
+            summary += "\n\n" + self.tr("Some chambers could not be synced:")
+            summary += "\n" + "\n".join(result.errors)
+        QMessageBox.information(self, self.tr("Sync with Hub"), summary)
+
+    def _resolve_conflict(self, conflict):
+        box = QMessageBox(self)
+        box.setWindowTitle(self.tr("Sync Conflict"))
+        box.setText(
+            self.tr(
+                "'{0}' differs between this computer and DeepVac Hub. "
+                "Which version do you want to keep?"
+            ).format(conflict.local["name"])
+        )
+        keep_local_btn = box.addButton(self.tr("Keep Local"), QMessageBox.AcceptRole)
+        keep_hub_btn = box.addButton(self.tr("Keep Hub"), QMessageBox.AcceptRole)
+        box.addButton(self.tr("Skip"), QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is keep_local_btn:
+            keep = "local"
+        elif clicked is keep_hub_btn:
+            keep = "hub"
+        else:
+            return
+        try:
+            sync_service.resolve_conflict(conflict, keep)
+        except (licensing_client.LicensingError, chambers_service.ChamberError) as exc:
+            QMessageBox.warning(self, self.tr("Sync Conflict"), str(exc))

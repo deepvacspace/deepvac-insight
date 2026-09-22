@@ -27,6 +27,17 @@ class TestProfileError(ValueError):
     pass
 
 
+_HUB_SYNC_COLUMNS = ("hub_id", "hub_synced_at")
+
+
+def _ensure_hub_sync_columns(conn):
+    """Adds any missing hub_* sync columns to the test_profiles table."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(test_profiles)")}
+    for column in _HUB_SYNC_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE test_profiles ADD COLUMN {column} TEXT")
+
+
 def connect_test_profiles(db_path=None):
     """db_path overrides TEST_PROFILES_DB for this call only -- see
     auth_service.connect_auth()'s docstring for why the other functions in
@@ -44,10 +55,13 @@ def connect_test_profiles(db_path=None):
             name TEXT NOT NULL UNIQUE,
             description TEXT NOT NULL DEFAULT '',
             created_by TEXT NOT NULL DEFAULT 'Unknown',
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            hub_id TEXT UNIQUE,
+            hub_synced_at TEXT
         )
         """
     )
+    _ensure_hub_sync_columns(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS test_profile_steps (
@@ -95,6 +109,8 @@ def _profile_row(conn, row):
         "description": row["description"],
         "created_by": row["created_by"],
         "created_at": row["created_at"],
+        "hub_id": row["hub_id"],
+        "hub_synced_at": row["hub_synced_at"],
         "steps": [_step_row(s) for s in steps],
     }
 
@@ -159,20 +175,49 @@ def _insert_steps(conn, profile_id, steps):
         )
 
 
-def add_profile(name, description, steps, created_by="Unknown"):
+def add_profile(name, description, steps, created_by="Unknown", hub_id=None):
     _validate(name, steps)
     conn = connect_test_profiles()
     try:
         try:
             cur = conn.execute(
-                "INSERT INTO test_profiles (name, description, created_by, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (name.strip(), description or "", created_by or "Unknown", _now()),
+                "INSERT INTO test_profiles (name, description, created_by, created_at, hub_id, hub_synced_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    name.strip(),
+                    description or "",
+                    created_by or "Unknown",
+                    _now(),
+                    hub_id,
+                    _now() if hub_id else None,
+                ),
             )
         except sqlite3.IntegrityError as exc:
             raise TestProfileError(f"A test profile named '{name}' already exists.") from exc
         profile_id = cur.lastrowid
         _insert_steps(conn, profile_id, steps)
+        conn.commit()
+        return get_profile(profile_id)
+    finally:
+        conn.close()
+
+
+def get_profile_by_hub_id(hub_id):
+    conn = connect_test_profiles()
+    try:
+        row = conn.execute("SELECT * FROM test_profiles WHERE hub_id = ?", (hub_id,)).fetchone()
+        return _profile_row(conn, row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_hub_synced(profile_id, hub_id):
+    conn = connect_test_profiles()
+    try:
+        conn.execute(
+            "UPDATE test_profiles SET hub_id = ?, hub_synced_at = ? WHERE id = ?",
+            (hub_id, _now(), profile_id),
+        )
         conn.commit()
         return get_profile(profile_id)
     finally:
@@ -199,6 +244,17 @@ def update_profile(profile_id, name, description, steps):
         _insert_steps(conn, profile_id, steps)
         conn.commit()
         return get_profile(profile_id)
+    finally:
+        conn.close()
+
+
+def touch_hub_synced(profile_id):
+    conn = connect_test_profiles()
+    try:
+        conn.execute(
+            "UPDATE test_profiles SET hub_synced_at = ? WHERE id = ?", (_now(), profile_id)
+        )
+        conn.commit()
     finally:
         conn.close()
 

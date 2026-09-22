@@ -18,8 +18,6 @@ PBKDF2_ITERATIONS = 200_000
 
 
 def _tr(text):
-    # Not a QObject here, so QCoreApplication.translate() rather than
-    # self.tr() -- pyside6-lupdate recognizes this pattern too.
     return QCoreApplication.translate("AuthService", text)
 
 
@@ -27,11 +25,19 @@ class AuthError(Exception):
     pass
 
 
+_HUB_LINK_COLUMNS = ("hub_user_id", "hub_email", "hub_org_id", "hub_org_name", "hub_linked_at")
+
+
+def _ensure_hub_link_columns(conn):
+    """Adds any missing hub_* columns to the users table."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    for column in _HUB_LINK_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
+
+
 def connect_auth(db_path=None):
-    """db_path overrides AUTH_DB for this call only -- the module-level
-    constant is what every other function in this module uses implicitly,
-    and is the intended monkeypatch seam for tests exercising those
-    (create_user, authenticate, ...) against an isolated database."""
+    """Opens (and initializes) the auth database connection."""
     path = db_path or AUTH_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -47,10 +53,16 @@ def connect_auth(db_path=None):
             password_salt TEXT NOT NULL,
             remember_token TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            hub_user_id TEXT,
+            hub_email TEXT,
+            hub_org_id TEXT,
+            hub_org_name TEXT,
+            hub_linked_at TEXT
         )
         """
     )
+    _ensure_hub_link_columns(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_users_remember_token ON users(remember_token)")
     conn.commit()
     return conn
@@ -68,7 +80,16 @@ def _verify_password(password, salt_hex, hash_hex):
 
 
 def _row_to_user(row):
-    return {"id": row["id"], "name": row["name"], "email": row["email"]}
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "email": row["email"],
+        "hub_user_id": row["hub_user_id"],
+        "hub_email": row["hub_email"],
+        "hub_org_id": row["hub_org_id"],
+        "hub_org_name": row["hub_org_name"],
+        "hub_linked_at": row["hub_linked_at"],
+    }
 
 
 def _now():
@@ -215,5 +236,51 @@ def change_password(user_id, current_password, new_password):
             (password_hash, salt, _now(), user_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def link_hub_account(user_id, *, hub_user_id, hub_email, hub_org_id, hub_org_name):
+    """Attaches a local profile to a hub account."""
+    conn = connect_auth()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise AuthError(_tr("User not found."))
+        conn.execute(
+            """
+            UPDATE users
+            SET hub_user_id = ?, hub_email = ?, hub_org_id = ?, hub_org_name = ?,
+                hub_linked_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (hub_user_id, hub_email, hub_org_id, hub_org_name, _now(), _now(), user_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return _row_to_user(row)
+    finally:
+        conn.close()
+
+
+def unlink_hub_account(user_id):
+    """Detaches a local profile from its hub account."""
+    conn = connect_auth()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row:
+            raise AuthError(_tr("User not found."))
+        conn.execute(
+            """
+            UPDATE users
+            SET hub_user_id = NULL, hub_email = NULL, hub_org_id = NULL,
+                hub_org_name = NULL, hub_linked_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (_now(), user_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return _row_to_user(row)
     finally:
         conn.close()
