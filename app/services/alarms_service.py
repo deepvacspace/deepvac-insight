@@ -85,6 +85,10 @@ def connect_alarms(db_path=None):
         conn.execute("ALTER TABLE alarm_rules ADD COLUMN chamber_id INTEGER")
     if "chamber_name" not in rule_columns:
         conn.execute("ALTER TABLE alarm_rules ADD COLUMN chamber_name TEXT")
+    if "hub_id" not in rule_columns:
+        conn.execute("ALTER TABLE alarm_rules ADD COLUMN hub_id TEXT")
+    if "hub_synced_at" not in rule_columns:
+        conn.execute("ALTER TABLE alarm_rules ADD COLUMN hub_synced_at TEXT")
 
     event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(alarm_events)")}
     if "chamber_id" not in event_columns:
@@ -116,6 +120,8 @@ def _rule_row(row):
         "created_at": row["created_at"],
         "chamber_id": row["chamber_id"],
         "chamber_name": row["chamber_name"],
+        "hub_id": row["hub_id"],
+        "hub_synced_at": row["hub_synced_at"],
     }
 
 
@@ -166,6 +172,7 @@ def add_rule(
     created_by="Unknown",
     chamber_id=None,
     chamber_name=None,
+    hub_id=None,
 ):
     conn = connect_alarms()
     try:
@@ -173,8 +180,8 @@ def add_rule(
             """
             INSERT INTO alarm_rules
                 (name, variable, condition, value, value2, severity, deadband, delay_s,
-                 enabled, created_by, created_at, chamber_id, chamber_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                 enabled, created_by, created_at, chamber_id, chamber_name, hub_id, hub_synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(name),
@@ -189,6 +196,8 @@ def add_rule(
                 _now(),
                 chamber_id,
                 chamber_name,
+                hub_id,
+                _now() if hub_id else None,
             ),
         )
         conn.commit()
@@ -202,6 +211,70 @@ def delete_rule(rule_id):
     conn = connect_alarms()
     try:
         conn.execute("DELETE FROM alarm_rules WHERE id = ?", (rule_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_rule(
+    rule_id, name, variable, condition, value, value2, severity, deadband, delay_s, enabled
+):
+    conn = connect_alarms()
+    try:
+        conn.execute(
+            """
+            UPDATE alarm_rules
+            SET name = ?, variable = ?, condition = ?, value = ?, value2 = ?, severity = ?,
+                deadband = ?, delay_s = ?, enabled = ?
+            WHERE id = ?
+            """,
+            (
+                str(name),
+                str(variable),
+                str(condition),
+                float(value),
+                float(value2) if value2 is not None else None,
+                str(severity),
+                float(deadband or 0.0),
+                float(delay_s or 0.0),
+                1 if enabled else 0,
+                rule_id,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM alarm_rules WHERE id = ?", (rule_id,)).fetchone()
+        return _rule_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_rule_by_hub_id(hub_id):
+    conn = connect_alarms()
+    try:
+        row = conn.execute("SELECT * FROM alarm_rules WHERE hub_id = ?", (hub_id,)).fetchone()
+        return _rule_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_hub_synced(rule_id, hub_id):
+    conn = connect_alarms()
+    try:
+        conn.execute(
+            "UPDATE alarm_rules SET hub_id = ?, hub_synced_at = ? WHERE id = ?",
+            (hub_id, _now(), rule_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM alarm_rules WHERE id = ?", (rule_id,)).fetchone()
+        return _rule_row(row)
+    finally:
+        conn.close()
+
+
+def touch_hub_synced(rule_id):
+    conn = connect_alarms()
+    try:
+        conn.execute("UPDATE alarm_rules SET hub_synced_at = ? WHERE id = ?", (_now(), rule_id))
         conn.commit()
     finally:
         conn.close()
