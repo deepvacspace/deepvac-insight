@@ -29,6 +29,11 @@ class ProfileDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(14)
 
+        self.org_membership_lbl = QLabel()
+        self.org_membership_lbl.setObjectName("orgMembershipLabel")
+        self.org_membership_lbl.setVisible(False)
+        root.addWidget(self.org_membership_lbl)
+
         info_lbl = QLabel(self.tr("ACCOUNT DETAILS"))
         info_lbl.setObjectName("sectionLabel")
         root.addWidget(info_lbl)
@@ -123,6 +128,9 @@ class ProfileDialog(QDialog):
         QMessageBox.information(self, self.tr("Profile"), self.tr("Password updated."))
 
     def _refresh_hub_section(self):
+        org_name = self.user.get("hub_org_name") if self.user.get("hub_user_id") else None
+        self.org_membership_lbl.setText(org_name or "")
+        self.org_membership_lbl.setVisible(bool(org_name))
         if self.user.get("hub_user_id"):
             self.hub_status_lbl.setText(
                 self.tr("Linked to {0} ({1}).").format(
