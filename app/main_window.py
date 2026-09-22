@@ -397,6 +397,9 @@ class DeepVacDesktop(
 
     def _show_account_menu(self):
         menu = QMenu(self)
+        if self.current_user.get("hub_user_id") and self.current_user.get("hub_org_name"):
+            org_header = menu.addAction(self.current_user["hub_org_name"])
+            org_header.setEnabled(False)
         header = menu.addAction(self.current_user.get("name") or self.tr("Account"))
         header.setEnabled(False)
         menu.addSeparator()
