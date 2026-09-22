@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.services import auth_service
+from app.account_link_window import AccountLinkWindow
+from app.services import auth_service, licensing_client
 
 
 class ProfileDialog(QDialog):
@@ -68,6 +69,23 @@ class ProfileDialog(QDialog):
         save_pw_btn.clicked.connect(self._save_password)
         root.addWidget(save_pw_btn)
 
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        root.addWidget(sep2)
+
+        hub_lbl = QLabel(self.tr("DEEPVAC HUB ACCOUNT"))
+        hub_lbl.setObjectName("sectionLabel")
+        root.addWidget(hub_lbl)
+
+        self.hub_status_lbl = QLabel()
+        self.hub_status_lbl.setWordWrap(True)
+        root.addWidget(self.hub_status_lbl)
+
+        self.hub_action_btn = QPushButton()
+        self.hub_action_btn.clicked.connect(self._on_hub_action)
+        root.addWidget(self.hub_action_btn)
+        self._refresh_hub_section()
+
         close_row = QHBoxLayout()
         close_row.addStretch(1)
         close_btn = QPushButton(self.tr("Close"))
@@ -103,3 +121,62 @@ class ProfileDialog(QDialog):
         self.new_pw_ed.clear()
         self.confirm_pw_ed.clear()
         QMessageBox.information(self, self.tr("Profile"), self.tr("Password updated."))
+
+    def _refresh_hub_section(self):
+        if self.user.get("hub_user_id"):
+            self.hub_status_lbl.setText(
+                self.tr("Linked to {0} ({1}).").format(
+                    self.user.get("hub_email") or "?", self.user.get("hub_org_name") or "?"
+                )
+            )
+            self.hub_action_btn.setText(self.tr("Unlink"))
+        else:
+            self.hub_status_lbl.setText(self.tr("Not linked to a DeepVac Hub account yet."))
+            self.hub_action_btn.setText(self.tr("Link my account…"))
+
+    def _on_hub_action(self):
+        if self.user.get("hub_user_id"):
+            self._unlink_account()
+        else:
+            self._link_account()
+
+    def _link_account(self):
+        organization_id = licensing_client.current_organization_id()
+        if not organization_id:
+            QMessageBox.warning(
+                self,
+                self.tr("Link Account"),
+                self.tr("No license found for this installation yet."),
+            )
+            return
+
+        window = AccountLinkWindow(organization_id, parent=self)
+        window.exec()
+        if not window.linked_account:
+            return
+        payload = window.linked_account
+        try:
+            updated = auth_service.link_hub_account(
+                self.user["id"],
+                hub_user_id=payload["user_id"],
+                hub_email=payload["email"],
+                hub_org_id=payload["organization_id"],
+                hub_org_name=payload["organization_name"],
+            )
+        except auth_service.AuthError as exc:
+            QMessageBox.warning(self, self.tr("Link Account"), str(exc))
+            return
+        self.user = updated
+        self.updated_user = updated
+        self._refresh_hub_section()
+        QMessageBox.information(self, self.tr("Link Account"), self.tr("Account linked."))
+
+    def _unlink_account(self):
+        try:
+            updated = auth_service.unlink_hub_account(self.user["id"])
+        except auth_service.AuthError as exc:
+            QMessageBox.warning(self, self.tr("Link Account"), str(exc))
+            return
+        self.user = updated
+        self.updated_user = updated
+        self._refresh_hub_section()

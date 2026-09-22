@@ -20,6 +20,17 @@ class ChamberError(ValueError):
     pass
 
 
+_HUB_SYNC_COLUMNS = ("hub_id", "hub_synced_at")
+
+
+def _ensure_hub_sync_columns(conn):
+    """Adds any missing hub_* sync columns to the chambers table."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(chambers)")}
+    for column in _HUB_SYNC_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE chambers ADD COLUMN {column} TEXT")
+
+
 def connect_chambers(db_path=None):
     """db_path overrides CHAMBERS_DB for this call only -- see
     auth_service.connect_auth()'s docstring for why the other functions in
@@ -36,10 +47,13 @@ def connect_chambers(db_path=None):
             name TEXT NOT NULL UNIQUE,
             host TEXT NOT NULL,
             port INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            hub_id TEXT UNIQUE,
+            hub_synced_at TEXT
         )
         """
     )
+    _ensure_hub_sync_columns(conn)
     conn.commit()
 
     # Seed one default entry on first run so the chamber dropdown is never
@@ -65,6 +79,8 @@ def _row(row):
         "host": row["host"],
         "port": row["port"],
         "created_at": row["created_at"],
+        "hub_id": row["hub_id"],
+        "hub_synced_at": row["hub_synced_at"],
     }
 
 
@@ -90,20 +106,60 @@ def _validate(name, host, port):
         raise ChamberError("Port must be between 1 and 65535.")
 
 
-def add_chamber(name, host, port):
+def add_chamber(name, host, port, hub_id=None):
     _validate(name, host, port)
     conn = connect_chambers()
     try:
         try:
             cur = conn.execute(
-                "INSERT INTO chambers (name, host, port, created_at) VALUES (?, ?, ?, ?)",
-                (name.strip(), host.strip(), int(port), _now()),
+                "INSERT INTO chambers (name, host, port, created_at, hub_id, hub_synced_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    name.strip(),
+                    host.strip(),
+                    int(port),
+                    _now(),
+                    hub_id,
+                    _now() if hub_id else None,
+                ),
             )
         except sqlite3.IntegrityError as exc:
             raise ChamberError(f"A chamber named '{name}' already exists.") from exc
         conn.commit()
         row = conn.execute("SELECT * FROM chambers WHERE id = ?", (cur.lastrowid,)).fetchone()
         return _row(row)
+    finally:
+        conn.close()
+
+
+def get_chamber_by_hub_id(hub_id):
+    conn = connect_chambers()
+    try:
+        row = conn.execute("SELECT * FROM chambers WHERE hub_id = ?", (hub_id,)).fetchone()
+        return _row(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_hub_synced(chamber_id, hub_id):
+    conn = connect_chambers()
+    try:
+        conn.execute(
+            "UPDATE chambers SET hub_id = ?, hub_synced_at = ? WHERE id = ?",
+            (hub_id, _now(), chamber_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chambers WHERE id = ?", (chamber_id,)).fetchone()
+        return _row(row)
+    finally:
+        conn.close()
+
+
+def touch_hub_synced(chamber_id):
+    conn = connect_chambers()
+    try:
+        conn.execute("UPDATE chambers SET hub_synced_at = ? WHERE id = ?", (_now(), chamber_id))
+        conn.commit()
     finally:
         conn.close()
 
