@@ -174,6 +174,10 @@ class ChamberSession(QObject):
             rule["_event_id"] = None
         self.alarms = rules
 
+    def reload_alarm_rules(self):
+        self._load_alarm_rules()
+        self.alarms_changed.emit()
+
     def add_alarm_rule(
         self,
         name,

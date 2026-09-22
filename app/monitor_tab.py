@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.common import COLORS, fmt
+from app.services import alarm_rule_sync_service as sync_service
+from app.services import licensing_client
 
 # Internal English keys stay stable for storage/comparison; only the label
 # shown to the user is translated (built fresh, per language, where used).
@@ -167,6 +169,9 @@ class MonitorTabPage(QWidget):
         add_alarm_btn.setObjectName("primaryButton")
         add_alarm_btn.clicked.connect(self._toggle_alarm_form)
         alarms_hdr.addWidget(add_alarm_btn)
+        sync_alarms_btn = QPushButton(self.tr("Sync with Hub"))
+        sync_alarms_btn.clicked.connect(self._sync_alarms_with_hub)
+        alarms_hdr.addWidget(sync_alarms_btn)
         al.addLayout(alarms_hdr)
 
         self._alarm_form = QFrame()
@@ -490,6 +495,49 @@ class MonitorTabPage(QWidget):
 
     def _delete_alarm(self, idx):
         self.session.delete_alarm_rule(idx)
+
+    def _sync_alarms_with_hub(self):
+        try:
+            result = sync_service.sync(self.session.chamber)
+        except (sync_service.SyncError, licensing_client.LicensingError) as exc:
+            QMessageBox.warning(self, self.tr("Sync with Hub"), str(exc))
+            return
+
+        for conflict in result.conflicts:
+            self._resolve_alarm_conflict(conflict)
+
+        self.session.reload_alarm_rules()
+
+        summary = self.tr("Pushed {0}, pulled {1}.").format(len(result.pushed), len(result.pulled))
+        if result.errors:
+            summary += "\n\n" + self.tr("Some alarm rules could not be synced:")
+            summary += "\n" + "\n".join(result.errors)
+        QMessageBox.information(self, self.tr("Sync with Hub"), summary)
+
+    def _resolve_alarm_conflict(self, conflict):
+        box = QMessageBox(self)
+        box.setWindowTitle(self.tr("Sync Conflict"))
+        box.setText(
+            self.tr(
+                "'{0}' differs between this computer and DeepVac Hub. "
+                "Which version do you want to keep?"
+            ).format(conflict.local["name"])
+        )
+        keep_local_btn = box.addButton(self.tr("Keep Local"), QMessageBox.AcceptRole)
+        keep_hub_btn = box.addButton(self.tr("Keep Hub"), QMessageBox.AcceptRole)
+        box.addButton(self.tr("Skip"), QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is keep_local_btn:
+            keep = "local"
+        elif clicked is keep_hub_btn:
+            keep = "hub"
+        else:
+            return
+        try:
+            sync_service.resolve_conflict(conflict, keep, self.session.chamber)
+        except licensing_client.LicensingError as exc:
+            QMessageBox.warning(self, self.tr("Sync Conflict"), str(exc))
 
     def _refresh_alarms_table(self):
         cols = [
