@@ -130,7 +130,7 @@ def test_sync_pulls_hub_only_rule_for_this_chamber(deepvac_data_dir, hub):
 
     assert result.pulled == ["Low Pressure"]
     local = alarms_service.list_rules(chamber_id=chamber["id"])[0]
-    assert local["created_by"] == "DeepVac Hub"
+    assert local["created_by"] == "Deepvac Hub"
 
 
 def test_sync_ignores_rules_from_other_chambers(deepvac_data_dir, hub):

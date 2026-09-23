@@ -22,7 +22,7 @@ class LoginWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.authenticated_user = None
-        self.setWindowTitle(self.tr("Sign in — DeepVac Insight"))
+        self.setWindowTitle(self.tr("Sign in — Deepvac Insight"))
         self.setWindowIcon(QIcon(ICON_PATH))
         self.setFixedSize(420, 560)
         self._build_ui()

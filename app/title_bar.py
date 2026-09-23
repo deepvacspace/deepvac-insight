@@ -36,7 +36,7 @@ class TitleBar(QWidget):
 
         lay.addStretch(1)
 
-        self.center_btn = QPushButton(self.tr("⌕   DeepVac Dashboard"))
+        self.center_btn = QPushButton(self.tr("⌕   Deepvac Dashboard"))
         self.center_btn.setObjectName("titleCenter")
         self.center_btn.setFixedSize(320, 26)
         lay.addWidget(self.center_btn)

@@ -1,4 +1,4 @@
-"""Syncs local test profiles with DeepVac Hub: pushes local-only profiles
+"""Syncs local test profiles with Deepvac Hub: pushes local-only profiles
 up, pulls hub-only profiles down, and surfaces conflicts for profiles that
 exist on both sides with different content."""
 
@@ -111,7 +111,7 @@ def sync():
                 hub_profile["name"],
                 hub_profile["description"],
                 hub_profile["steps"],
-                created_by="DeepVac Hub",
+                created_by="Deepvac Hub",
                 hub_id=hub_profile["id"],
             )
             result.pulled.append(hub_profile["name"])

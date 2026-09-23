@@ -1,4 +1,4 @@
-# DeepVac Inisght
+# Deepvac Inisght
 
 A PySide6 desktop dashboard application.
 

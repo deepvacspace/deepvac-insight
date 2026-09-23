@@ -139,7 +139,7 @@ class ProfileDialog(QDialog):
             )
             self.hub_action_btn.setText(self.tr("Unlink"))
         else:
-            self.hub_status_lbl.setText(self.tr("Not linked to a DeepVac Hub account yet."))
+            self.hub_status_lbl.setText(self.tr("Not linked to a Deepvac Hub account yet."))
             self.hub_action_btn.setText(self.tr("Link my account…"))
 
     def _on_hub_action(self):

@@ -11,10 +11,10 @@ class AccountLinkWindow(DeviceCodeWindow):
         super().__init__(quit_app_on_close=False, parent=parent)
 
     def _window_title(self):
-        return self.tr("Link Account — DeepVac Insight")
+        return self.tr("Link Account — Deepvac Insight")
 
     def _heading_text(self):
-        return self.tr("Link your DeepVac Hub account")
+        return self.tr("Link your Deepvac Hub account")
 
     def _start_flow(self):
         return licensing_client.start_account_link(self._organization_id)
