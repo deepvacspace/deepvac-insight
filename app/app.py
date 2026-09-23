@@ -1,5 +1,6 @@
 """Entry point — login flow, splash screen, and main() only."""
 
+import contextlib
 import os
 import sys
 
@@ -17,6 +18,7 @@ from app.services import (
     i18n_service,
     licensing_client,
     log_service,
+    org_directory_sync_service,
     settings_service,
 )
 
@@ -47,7 +49,7 @@ def make_splash():
     else:
         painter.setPen(QColor("#f8fafc"))
         painter.setFont(QFont("Segoe UI", 26, QFont.Black))
-        painter.drawText(QRectF(0, 60, 520, 80), Qt.AlignCenter, "DeepVac")
+        painter.drawText(QRectF(0, 60, 520, 80), Qt.AlignCenter, "Deepvac")
 
     painter.setPen(QColor("#60a5fa"))
     painter.drawLine(60, 192, 460, 192)
@@ -81,7 +83,7 @@ def _show_splash(app, window_receiver_attr_name=None):
     splash = make_splash()
     splash.show()
     splash.showMessage(
-        QCoreApplication.translate("main", "Starting DeepVac…"),
+        QCoreApplication.translate("main", "Starting Deepvac…"),
         Qt.AlignCenter | Qt.AlignBottom,
         Qt.white,
     )
@@ -171,6 +173,10 @@ def main():
     licensed, activated_account = _ensure_license_activated(app)
     if not licensed:
         sys.exit(0)
+
+    if activated_account is not None:
+        with contextlib.suppress(org_directory_sync_service.SyncError):
+            org_directory_sync_service.pull()
 
     user = _remembered_user()
     if user is not None:

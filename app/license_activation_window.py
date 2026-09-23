@@ -11,7 +11,7 @@ class LicenseActivationWindow(DeviceCodeWindow):
         super().__init__(quit_app_on_close=True)
 
     def _window_title(self):
-        return self.tr("Activate — DeepVac Insight")
+        return self.tr("Activate — Deepvac Insight")
 
     def _heading_text(self):
         return self.tr("Activate this installation")

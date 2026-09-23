@@ -88,7 +88,7 @@ def test_sync_pulls_hub_only_profile(deepvac_data_dir, hub):
     assert result.pulled == ["Hub Profile"]
     assert result.pushed == []
     local = profiles.list_profiles()[0]
-    assert local["created_by"] == "DeepVac Hub"
+    assert local["created_by"] == "Deepvac Hub"
 
 
 def test_sync_leaves_identical_profiles_alone(deepvac_data_dir, hub):

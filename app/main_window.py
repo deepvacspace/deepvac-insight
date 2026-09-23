@@ -43,7 +43,7 @@ class DeepVacDesktop(
         self.splash = splash
         self.current_user = current_user or {"id": None, "name": "User", "email": ""}
         self.logout_requested = False
-        self.setWindowTitle(self.tr("DeepVac Dashboard"))
+        self.setWindowTitle(self.tr("Deepvac Dashboard"))
         self.setWindowIcon(QIcon(ICON_PATH))
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.resize(1500, 920)
@@ -359,7 +359,7 @@ class DeepVacDesktop(
         QMessageBox.information(
             self,
             self.tr("Language"),
-            self.tr("The new language will take effect the next time you start DeepVac."),
+            self.tr("The new language will take effect the next time you start Deepvac."),
         )
 
     def _backup_now(self):
@@ -404,11 +404,14 @@ class DeepVacDesktop(
         header.setEnabled(False)
         menu.addSeparator()
         act_profile = menu.addAction(self.tr("Profile"))
+        act_directory = menu.addAction(self.tr("Organization Directory"))
         act_logout = menu.addAction(self.tr("Log out"))
         btn = self.act_account_btn
         chosen = menu.exec(btn.mapToGlobal(QPoint(btn.width() + 4, 0)))
         if chosen == act_profile:
             self._show_profile_dialog()
+        elif chosen == act_directory:
+            self._show_org_directory_dialog()
         elif chosen == act_logout:
             self._logout()
 
@@ -419,6 +422,12 @@ class DeepVacDesktop(
         dlg.exec()
         self.current_user = dlg.updated_user
         self.act_account_btn.setToolTip(self.current_user.get("name") or self.tr("Account"))
+
+    def _show_org_directory_dialog(self):
+        from app.org_directory_dialog import OrgDirectoryDialog
+
+        dlg = OrgDirectoryDialog(self)
+        dlg.exec()
 
     def _logout(self):
         from PySide6.QtCore import QSettings

@@ -1,4 +1,4 @@
-"""Syncs one chamber's alarm rules with DeepVac Hub: pushes local-only
+"""Syncs one chamber's alarm rules with Deepvac Hub: pushes local-only
 rules up, pulls hub-only rules down, and surfaces conflicts for rules that
 exist on both sides with different content. Requires the chamber itself to
 already be synced (see chamber_sync_service)."""
@@ -106,7 +106,7 @@ def sync(local_chamber):
             hub_rule["severity"],
             deadband=hub_rule["deadband"],
             delay_s=hub_rule["delay_s"],
-            created_by="DeepVac Hub",
+            created_by="Deepvac Hub",
             chamber_id=local_chamber["id"],
             chamber_name=local_chamber["name"],
             hub_id=hub_rule["id"],

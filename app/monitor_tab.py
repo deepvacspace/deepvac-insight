@@ -519,7 +519,7 @@ class MonitorTabPage(QWidget):
         box.setWindowTitle(self.tr("Sync Conflict"))
         box.setText(
             self.tr(
-                "'{0}' differs between this computer and DeepVac Hub. "
+                "'{0}' differs between this computer and Deepvac Hub. "
                 "Which version do you want to keep?"
             ).format(conflict.local["name"])
         )

@@ -1,4 +1,4 @@
-"""Syncs the local chamber registry with DeepVac Hub: pushes local-only
+"""Syncs the local chamber registry with Deepvac Hub: pushes local-only
 chambers up, pulls hub-only chambers down, and surfaces conflicts for
 chambers that exist on both sides with different content."""
 
