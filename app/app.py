@@ -1,7 +1,5 @@
 """Entry point — login flow, splash screen, and main() only."""
 
-import contextlib
-import os
 import sys
 
 from PySide6.QtCore import QCoreApplication, QRectF, QSettings, Qt, QTimer
@@ -9,14 +7,12 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from app.common import ICON_PATH, LOGO_PATH
-from app.license_activation_window import LicenseActivationWindow
 from app.login_window import LoginWindow
 from app.main_window import DeepVacDesktop
 from app.services import (
     auth_service,
     backup_service,
     i18n_service,
-    licensing_client,
     log_service,
     org_directory_sync_service,
     settings_service,
@@ -61,22 +57,6 @@ def make_splash():
 def _remembered_user():
     token = QSettings("DeepVac", "Insight").value("auth/remember_token", "")
     return auth_service.get_user_by_token(token) if token else None
-
-
-def _ensure_license_activated(app):
-    """Ensures this installation holds a valid license, running the
-    activation flow if needed. Returns (licensed, activated_account)."""
-    if os.environ.get("DEEPVAC_SKIP_LICENSE_CHECK"):
-        return True, None
-    if licensing_client.has_valid_local_license():
-        return True, None
-
-    activation = LicenseActivationWindow()
-    activation.show()
-    app.exec()
-    if activation.activated_license is None:
-        return False, None
-    return True, activation.activated_account
 
 
 def _show_splash(app, window_receiver_attr_name=None):
@@ -169,14 +149,6 @@ def main():
         backup_service.backup_all()
     except Exception as exc:
         print(f"[backup] startup backup skipped: {exc}")
-
-    licensed, activated_account = _ensure_license_activated(app)
-    if not licensed:
-        sys.exit(0)
-
-    if activated_account is not None:
-        with contextlib.suppress(org_directory_sync_service.SyncError):
-            org_directory_sync_service.pull()
 
     user = _remembered_user()
     if user is not None:

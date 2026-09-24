@@ -34,3 +34,4 @@ test-results/
 installer/output/
 
 .claude/
+DEV_GUIDE.md

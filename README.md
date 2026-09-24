@@ -58,11 +58,6 @@ for the full local dev-loop.
 uv run python main.py
 ```
 
-```powershell
-$env:DEEPVAC_SKIP_LICENSE_CHECK = "1"
-uv run python main.py
-```
-
 ## Building a distributable
 
 To hand this to someone without a Python/conda setup, freeze it with
@@ -82,15 +77,18 @@ data\deepvac_runs.sqlite3
 
 Generated reports are written to `data\reports\`.
 
-## Cloud licensing (device activation)
+## Cloud authentication (optional)
 
-Before the sign-in screen, the app requires this installation to hold a
-valid signed license certificate from `hub` — the sibling repo implementing
-the vendor cloud licensing control plane (`../hub`). It never asks for a
-username/password itself for this: on first run (or whenever the cached
-license stops verifying) it shows an **Activate this installation** window
-with a short code, opens `hub`'s browser activation page, and polls until
-an organization admin approves the device there. See
+The app runs fully offline and never requires authentication to start.
+Authenticating is optional and only needed for optional cloud backup of
+non-sensitive data (shared test profiles, chamber registry, alarm rules,
+organization directory) through `hub` — the sibling repo implementing the
+vendor cloud licensing control plane (`../hub`). To authenticate, open
+**Profile** and click **Authenticate**: it shows an **Activate this
+installation** window with a short code, opens `hub`'s browser activation
+page, and polls until an organization admin approves the device there.
+The signing keys used to verify the resulting license are fetched once and
+stored locally, so an authenticated installation keeps working offline. See
 `app/services/licensing_client.py` and `app/license_activation_window.py`,
 and `../hub/docs/sequences.md` for the full protocol.
 
@@ -107,13 +105,10 @@ docker compose run --rm tools python scripts/seed_development.py --key-id dev-ke
 That seeds a demo organization with an active `deepvac-insight` professional
 license (login `demo@example.com` / `DemoPass123!` at `http://localhost:8080/login`).
 Then just run `python main.py` here — it talks to `http://localhost:8080/api/v1`
-by default (`DEEPVAC_LICENSING_API_URL` to override). Approve the device
-using the demo login when the activation window opens its browser tab, and
-the app proceeds to the local sign-in screen once activation completes.
-The device keypair and cached license live under `data\license\`.
-
-Set `DEEPVAC_SKIP_LICENSE_CHECK=1` to bypass this gate entirely for
-unrelated dev work when no `hub` instance is running.
+by default (`DEEPVAC_LICENSING_API_URL` to override). Sign in locally,
+then click **Authenticate** in Profile and approve the device using the
+demo login when the activation window opens its browser tab. The device
+keypair, cached license, and trusted signing keys live under `data\license\`.
 
 ## Accounts
 

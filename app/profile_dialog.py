@@ -1,5 +1,7 @@
 """ProfileDialog — change display name, email, and password for the signed-in user."""
 
+import contextlib
+
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -13,7 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from app.account_link_window import AccountLinkWindow
-from app.services import auth_service, licensing_client
+from app.license_activation_window import LicenseActivationWindow
+from app.services import auth_service, licensing_client, org_directory_sync_service
 
 
 class ProfileDialog(QDialog):
@@ -82,6 +85,17 @@ class ProfileDialog(QDialog):
         hub_lbl.setObjectName("sectionLabel")
         root.addWidget(hub_lbl)
 
+        self.auth_notice_lbl = QLabel(
+            self.tr("You must authenticate to use optional cloud backup of non-sensitive data.")
+        )
+        self.auth_notice_lbl.setWordWrap(True)
+        root.addWidget(self.auth_notice_lbl)
+
+        self.auth_btn = QPushButton(self.tr("Authenticate"))
+        self.auth_btn.setObjectName("primaryButton")
+        self.auth_btn.clicked.connect(self._authenticate)
+        root.addWidget(self.auth_btn)
+
         self.hub_status_lbl = QLabel()
         self.hub_status_lbl.setWordWrap(True)
         root.addWidget(self.hub_status_lbl)
@@ -128,9 +142,14 @@ class ProfileDialog(QDialog):
         QMessageBox.information(self, self.tr("Profile"), self.tr("Password updated."))
 
     def _refresh_hub_section(self):
+        authenticated = licensing_client.has_valid_local_license()
         org_name = self.user.get("hub_org_name") if self.user.get("hub_user_id") else None
         self.org_membership_lbl.setText(org_name or "")
         self.org_membership_lbl.setVisible(bool(org_name))
+        self.auth_notice_lbl.setVisible(not authenticated)
+        self.auth_btn.setVisible(not authenticated)
+        self.hub_status_lbl.setVisible(authenticated)
+        self.hub_action_btn.setVisible(authenticated)
         if self.user.get("hub_user_id"):
             self.hub_status_lbl.setText(
                 self.tr("Linked to {0} ({1}).").format(
@@ -162,7 +181,24 @@ class ProfileDialog(QDialog):
         window.exec()
         if not window.linked_account:
             return
-        payload = window.linked_account
+        if not self._store_hub_account(window.linked_account):
+            return
+        self._refresh_hub_section()
+        QMessageBox.information(self, self.tr("Link Account"), self.tr("Account linked."))
+
+    def _authenticate(self):
+        window = LicenseActivationWindow(parent=self)
+        window.exec()
+        if window.activated_license is None:
+            return
+        if not self.user.get("hub_user_id"):
+            self._store_hub_account(window.activated_account)
+        with contextlib.suppress(org_directory_sync_service.SyncError):
+            org_directory_sync_service.pull()
+        self._refresh_hub_section()
+        QMessageBox.information(self, self.tr("Authenticate"), self.tr("Authenticated."))
+
+    def _store_hub_account(self, payload):
         try:
             updated = auth_service.link_hub_account(
                 self.user["id"],
@@ -173,11 +209,10 @@ class ProfileDialog(QDialog):
             )
         except auth_service.AuthError as exc:
             QMessageBox.warning(self, self.tr("Link Account"), str(exc))
-            return
+            return False
         self.user = updated
         self.updated_user = updated
-        self._refresh_hub_section()
-        QMessageBox.information(self, self.tr("Link Account"), self.tr("Account linked."))
+        return True
 
     def _unlink_account(self):
         try:

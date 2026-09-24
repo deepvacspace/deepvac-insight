@@ -84,7 +84,7 @@ def _replace_hub_profile(hub_id, profile):
 
 def sync():
     if licensing_client.current_organization_id() is None:
-        raise SyncError("No license found for this installation yet.")
+        raise SyncError("Not authenticated. Authenticate from your Profile first.")
 
     hub_profiles = _fetch_hub_profiles()
     local_profiles = test_profiles_service.list_profiles()

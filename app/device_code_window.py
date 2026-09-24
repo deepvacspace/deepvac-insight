@@ -19,9 +19,8 @@ from app.services import licensing_client
 
 
 class DeviceCodeWindow(QDialog):
-    def __init__(self, *, quit_app_on_close, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._quit_app_on_close = quit_app_on_close
         self._flow = None
         self.setWindowTitle(self._window_title())
         self.setWindowIcon(QIcon(ICON_PATH))
@@ -104,7 +103,7 @@ class DeviceCodeWindow(QDialog):
         self.retry_btn = QPushButton(self.tr("Retry"))
         self.retry_btn.setVisible(False)
         self.retry_btn.clicked.connect(self._start)
-        close_btn = QPushButton(self.tr("Quit") if self._quit_app_on_close else self.tr("Cancel"))
+        close_btn = QPushButton(self.tr("Cancel"))
         close_btn.clicked.connect(self.close)
         bottom_row.addWidget(self.retry_btn)
         bottom_row.addStretch(1)
@@ -194,8 +193,6 @@ class DeviceCodeWindow(QDialog):
 
     def closeEvent(self, event):
         self._timer.stop()
-        if self._quit_app_on_close:
-            QApplication.instance().quit()
         super().closeEvent(event)
 
     def _apply_style(self):
