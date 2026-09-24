@@ -1,14 +1,14 @@
-"""LicenseActivationWindow — browser-based device-code activation gate shown before login."""
+"""LicenseActivationWindow — browser-based device-code flow that authenticates this installation."""
 
 from app.device_code_window import DeviceCodeWindow
 from app.services import licensing_client
 
 
 class LicenseActivationWindow(DeviceCodeWindow):
-    def __init__(self):
+    def __init__(self, parent=None):
         self.activated_license = None
         self.activated_account = None
-        super().__init__(quit_app_on_close=True)
+        super().__init__(parent=parent)
 
     def _window_title(self):
         return self.tr("Activate — Deepvac Insight")

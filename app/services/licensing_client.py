@@ -39,6 +39,7 @@ _LICENSE_DIR = DATA_DIR / "license"
 _DEVICE_PRIVATE_KEY_PATH = _LICENSE_DIR / "device_private_key.bin"
 _LICENSE_PATH = _LICENSE_DIR / "license.json"
 _ACCOUNT_INFO_PATH = _LICENSE_DIR / "account_info.json"
+_TRUSTED_KEYS_PATH = _LICENSE_DIR / "trusted_keys.json"
 
 _REQUIRED_PAYLOAD_KEYS = frozenset(
     {
@@ -223,13 +224,38 @@ def current_organization_id() -> str | None:
     return envelope.get("payload", {}).get("organization_id")
 
 
+def load_trusted_keys() -> dict[str, bytes] | None:
+    if not _TRUSTED_KEYS_PATH.exists():
+        return None
+    try:
+        stored = json.loads(_TRUSTED_KEYS_PATH.read_text(encoding="utf-8"))
+        return {key_id: urlsafe_b64decode(value) for key_id, value in stored.items()}
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def save_trusted_keys(keys: dict[str, bytes]) -> None:
+    _LICENSE_DIR.mkdir(parents=True, exist_ok=True)
+    stored = {key_id: urlsafe_b64encode(value).decode("ascii") for key_id, value in keys.items()}
+    _TRUSTED_KEYS_PATH.write_text(json.dumps(stored), encoding="utf-8")
+
+
+def get_trusted_keys(key_id: str | None = None) -> dict[str, bytes]:
+    """Returns the locally stored trusted keys, fetching them from the hub if missing."""
+    keys = load_trusted_keys()
+    if keys is None or (key_id is not None and key_id not in keys):
+        keys = fetch_public_keys()
+        save_trusted_keys(keys)
+    return keys
+
+
 def has_valid_local_license() -> bool:
-    """True if a cached license exists and verifies against trusted keys."""
+    """True if a cached license exists and verifies against the locally stored trusted keys."""
     envelope = load_license()
     if envelope is None:
         return False
     try:
-        trusted_keys = fetch_public_keys()
+        trusted_keys = get_trusted_keys(envelope.get("key_id"))
         verify_envelope(envelope, trusted_keys)
     except LicensingError:
         return False
@@ -308,9 +334,9 @@ def complete_activation(activation_id: str, display_name: str | None = None) -> 
     response = _request_json(
         "POST", f"{api_base_url()}/activations/{activation_id}/complete", payload
     )
-    trusted_keys = fetch_public_keys()
     license_envelope = response["license"]
     account_envelope = response["account"]
+    trusted_keys = get_trusted_keys(license_envelope.get("key_id"))
     license_payload = verify_envelope(license_envelope, trusted_keys)
     account_payload = verify_account_info(account_envelope, trusted_keys)
     save_license(license_envelope)
@@ -347,7 +373,7 @@ def poll_account_link_status(link_id: str) -> str:
 def complete_account_link(link_id: str) -> dict:
     """Completes an account-link request and returns the verified account payload."""
     envelope = _request_json("POST", f"{api_base_url()}/account-links/{link_id}/complete")
-    trusted_keys = fetch_public_keys()
+    trusted_keys = get_trusted_keys(envelope.get("key_id"))
     account_payload = verify_account_info(envelope, trusted_keys)
     save_account_info(envelope)
     return account_payload

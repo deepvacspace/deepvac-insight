@@ -55,7 +55,7 @@ def _replace_hub_chamber(hub_id, chamber):
 
 def sync():
     if licensing_client.current_organization_id() is None:
-        raise SyncError("No license found for this installation yet.")
+        raise SyncError("Not authenticated. Authenticate from your Profile first.")
 
     hub_chambers = _fetch_hub_chambers()
     local_chambers = chambers_service.list_chambers()

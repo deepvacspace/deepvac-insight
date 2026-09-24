@@ -13,7 +13,7 @@ class SyncError(Exception):
 
 def pull():
     if licensing_client.current_organization_id() is None:
-        raise SyncError("No license found for this installation yet.")
+        raise SyncError("Not authenticated. Authenticate from your Profile first.")
     url = f"{licensing_client.api_base_url()}/organization-members"
     try:
         response = licensing_client.signed_request_json("GET", url)

@@ -8,7 +8,7 @@ class AccountLinkWindow(DeviceCodeWindow):
     def __init__(self, organization_id, parent=None):
         self._organization_id = organization_id
         self.linked_account = None
-        super().__init__(quit_app_on_close=False, parent=parent)
+        super().__init__(parent=parent)
 
     def _window_title(self):
         return self.tr("Link Account — Deepvac Insight")

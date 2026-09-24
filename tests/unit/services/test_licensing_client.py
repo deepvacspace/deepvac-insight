@@ -86,16 +86,16 @@ def isolated_license_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(licensing_client, "_LICENSE_DIR", license_dir)
     monkeypatch.setattr(licensing_client, "_LICENSE_PATH", license_dir / "license.json")
     monkeypatch.setattr(licensing_client, "_ACCOUNT_INFO_PATH", license_dir / "account_info.json")
+    monkeypatch.setattr(licensing_client, "_TRUSTED_KEYS_PATH", license_dir / "trusted_keys.json")
+    monkeypatch.setattr(
+        licensing_client, "_DEVICE_PRIVATE_KEY_PATH", license_dir / "device_private_key.bin"
+    )
     return license_dir
 
 
-def test_current_organization_id_returns_none_without_a_cached_license(isolated_license_dir):
-    assert licensing_client.current_organization_id() is None
-
-
-def test_current_organization_id_reads_from_cached_license(isolated_license_dir):
+def _license_payload(**overrides):
     now = datetime.now(timezone.utc)
-    license_payload = {
+    payload = {
         "schema_version": 1,
         "license_id": "id",
         "user_id": "id",
@@ -111,11 +111,86 @@ def test_current_organization_id_reads_from_cached_license(isolated_license_dir)
         "key_id": "test-key",
         "license_version": 1,
     }
+    payload.update(overrides)
+    return payload
+
+
+def _unreachable_hub(*_args, **_kwargs):
+    raise licensing_client.ApiError("hub unreachable")
+
+
+def test_current_organization_id_returns_none_without_a_cached_license(isolated_license_dir):
+    assert licensing_client.current_organization_id() is None
+
+
+def test_current_organization_id_reads_from_cached_license(isolated_license_dir):
     licensing_client.save_license(
-        {"envelope_version": 1, "payload": license_payload, "signature": "x", "key_id": "test-key"}
+        {
+            "envelope_version": 1,
+            "payload": _license_payload(),
+            "signature": "x",
+            "key_id": "test-key",
+        }
     )
 
     assert licensing_client.current_organization_id() == "org-42"
+
+
+def test_get_trusted_keys_fetches_once_then_uses_stored_copy(
+    isolated_license_dir, signing_keypair, monkeypatch
+):
+    _private_key, raw_public = signing_keypair
+    calls = []
+
+    def fake_fetch():
+        calls.append(1)
+        return {"test-key": raw_public}
+
+    monkeypatch.setattr(licensing_client, "fetch_public_keys", fake_fetch)
+
+    first = licensing_client.get_trusted_keys("test-key")
+    second = licensing_client.get_trusted_keys("test-key")
+
+    assert first == second == {"test-key": raw_public}
+    assert len(calls) == 1
+
+
+def test_get_trusted_keys_refetches_when_key_id_is_unknown(
+    isolated_license_dir, signing_keypair, monkeypatch
+):
+    _private_key, raw_public = signing_keypair
+    licensing_client.save_trusted_keys({"old-key": raw_public})
+    monkeypatch.setattr(
+        licensing_client,
+        "fetch_public_keys",
+        lambda: {"old-key": raw_public, "new-key": raw_public},
+    )
+
+    keys = licensing_client.get_trusted_keys("new-key")
+
+    assert set(keys) == {"old-key", "new-key"}
+    assert set(licensing_client.load_trusted_keys()) == {"old-key", "new-key"}
+
+
+def test_has_valid_local_license_works_offline_once_keys_are_stored(
+    isolated_license_dir, signing_keypair, monkeypatch
+):
+    private_key, raw_public = signing_keypair
+    licensing_client.save_trusted_keys({"test-key": raw_public})
+    licensing_client.save_license(_sign(_license_payload(), private_key))
+    monkeypatch.setattr(licensing_client, "fetch_public_keys", _unreachable_hub)
+
+    assert licensing_client.has_valid_local_license() is True
+
+
+def test_has_valid_local_license_is_false_without_stored_keys_and_hub(
+    isolated_license_dir, signing_keypair, monkeypatch
+):
+    private_key, _raw_public = signing_keypair
+    licensing_client.save_license(_sign(_license_payload(), private_key))
+    monkeypatch.setattr(licensing_client, "fetch_public_keys", _unreachable_hub)
+
+    assert licensing_client.has_valid_local_license() is False
 
 
 def test_save_and_load_account_info_roundtrip(isolated_license_dir, signing_keypair):
