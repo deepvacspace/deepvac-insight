@@ -14,6 +14,7 @@ from app.services import (
     backup_service,
     i18n_service,
     log_service,
+    org_directory_sync_service,
     settings_service,
 )
 
@@ -115,6 +116,22 @@ def _run_smoke_test(no_splash=False):
     return 0
 
 
+def _link_activation_account(user, activated_account):
+    """Attaches a freshly-activated hub account to a local profile, if any."""
+    if activated_account is None or user.get("hub_user_id"):
+        return user
+    try:
+        return auth_service.link_hub_account(
+            user["id"],
+            hub_user_id=activated_account["user_id"],
+            hub_email=activated_account["email"],
+            hub_org_id=activated_account["organization_id"],
+            hub_org_name=activated_account["organization_name"],
+        )
+    except auth_service.AuthError:
+        return user
+
+
 def main():
     args = sys.argv[1:]
     if "--smoke-test" in args:
@@ -134,6 +151,9 @@ def main():
         print(f"[backup] startup backup skipped: {exc}")
 
     user = _remembered_user()
+    if user is not None:
+        user = _link_activation_account(user, activated_account)
+        activated_account = None
 
     while True:
         if user is None:
@@ -143,6 +163,8 @@ def main():
             user = login.authenticated_user
             if user is None:
                 sys.exit(0)
+            user = _link_activation_account(user, activated_account)
+            activated_account = None
 
         splash = None if no_splash else _show_splash(app)
 
