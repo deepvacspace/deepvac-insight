@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import ssl
 import urllib.error
 import urllib.request
 from base64 import urlsafe_b64decode, urlsafe_b64encode
@@ -270,6 +271,7 @@ def _request_json(
     *,
     body: bytes | None = None,
     extra_headers: dict[str, str] | None = None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> dict:
     if body is None:
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -278,7 +280,9 @@ def _request_json(
         headers.update(extra_headers)
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (local dev API)
+        with urllib.request.urlopen(  # noqa: S310 (local dev API)
+            req, timeout=timeout, context=ssl_context
+        ) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -287,7 +291,7 @@ def _request_json(
             detail = json.loads(body).get("detail", body)
         raise ApiError(f"{exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
-        raise ApiError(f"Could not reach licensing service at {url}: {exc.reason}") from exc
+        raise ApiError(f"Could not reach {url}: {exc.reason}") from exc
 
 
 def fetch_public_keys() -> dict[str, bytes]:
@@ -379,6 +383,13 @@ def complete_account_link(link_id: str) -> dict:
     return account_payload
 
 
+def request_json(
+    method: str, url: str, payload: dict | None = None, ssl_context: ssl.SSLContext | None = None
+) -> dict:
+    """Calls an unauthenticated JSON endpoint."""
+    return _request_json(method, url, payload, ssl_context=ssl_context)
+
+
 def _device_signed_headers(body: bytes) -> dict[str, str]:
     private_key, public_raw = get_or_create_device_keypair()
     signature = private_key.sign(body)
@@ -388,8 +399,10 @@ def _device_signed_headers(body: bytes) -> dict[str, str]:
     }
 
 
-def signed_request_json(method: str, url: str, payload: dict | None = None) -> dict:
-    """Calls a device-signature-authenticated hub endpoint."""
+def signed_request_json(
+    method: str, url: str, payload: dict | None = None, ssl_context: ssl.SSLContext | None = None
+) -> dict:
+    """Calls a device-signature-authenticated endpoint."""
     body = (
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
             "utf-8"
@@ -397,4 +410,10 @@ def signed_request_json(method: str, url: str, payload: dict | None = None) -> d
         if payload is not None
         else b""
     )
-    return _request_json(method, url, body=body, extra_headers=_device_signed_headers(body))
+    return _request_json(
+        method,
+        url,
+        body=body,
+        extra_headers=_device_signed_headers(body),
+        ssl_context=ssl_context,
+    )

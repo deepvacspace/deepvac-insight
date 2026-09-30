@@ -95,6 +95,8 @@ def connect_alarms(db_path=None):
         conn.execute("ALTER TABLE alarm_events ADD COLUMN chamber_id INTEGER")
     if "chamber_name" not in event_columns:
         conn.execute("ALTER TABLE alarm_events ADD COLUMN chamber_name TEXT")
+    if "collab_uid" not in event_columns:
+        conn.execute("ALTER TABLE alarm_events ADD COLUMN collab_uid TEXT")
 
     conn.commit()
     return conn
@@ -140,6 +142,7 @@ def _event_row(row):
         "comment": row["comment"],
         "chamber_id": row["chamber_id"],
         "chamber_name": row["chamber_name"],
+        "collab_uid": row["collab_uid"],
     }
 
 
@@ -352,6 +355,59 @@ def list_events(limit=500, chamber_id=None):
                 (chamber_id, limit),
             ).fetchall()
         return [_event_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_event_collab_uid(event_id, collab_uid):
+    conn = connect_alarms()
+    try:
+        conn.execute("UPDATE alarm_events SET collab_uid = ? WHERE id = ?", (collab_uid, event_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def add_event_from_remote(fields, chamber_id, chamber_name, collab_uid):
+    """Stores a shared alarm event received from a collaboration host."""
+    conn = connect_alarms()
+    try:
+        conn.execute(
+            """
+            INSERT INTO alarm_events
+                (rule_id, rule_name, variable, severity, trigger_value, triggered_at, cleared_at,
+                 acknowledged_at, acknowledged_by, comment, chamber_id, chamber_name, collab_uid)
+            VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fields["rule_name"],
+                fields["variable"],
+                fields["severity"],
+                fields["trigger_value"],
+                fields["triggered_at"],
+                fields["cleared_at"],
+                fields["acknowledged_at"],
+                fields["acknowledged_by"],
+                fields["comment"] or "",
+                chamber_id,
+                chamber_name,
+                collab_uid,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_event_state(event_id, cleared_at, acknowledged_at, acknowledged_by, comment):
+    conn = connect_alarms()
+    try:
+        conn.execute(
+            "UPDATE alarm_events SET cleared_at = ?, acknowledged_at = ?, acknowledged_by = ?, "
+            "comment = ? WHERE id = ?",
+            (cleared_at, acknowledged_at, acknowledged_by, comment or "", event_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

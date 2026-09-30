@@ -54,6 +54,22 @@ def connect_annotations(db_path=None):
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rules_run ON variable_rules(run_key)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS collab_tombstones "
+        "(uid TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'annotation')"
+    )
+
+    for table in ("annotations", "variable_rules"):
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "collab_uid" not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN collab_uid TEXT")
+    tombstone_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(collab_tombstones)")
+    }
+    if "kind" not in tombstone_columns:
+        conn.execute(
+            "ALTER TABLE collab_tombstones ADD COLUMN kind TEXT NOT NULL DEFAULT 'annotation'"
+        )
     conn.commit()
     return conn
 
@@ -73,6 +89,7 @@ def _annotation_row(row):
         "label": row["label"],
         "color": row["color"],
         "created_at": row["created_at"],
+        "collab_uid": row["collab_uid"],
     }
 
 
@@ -88,6 +105,7 @@ def _rule_row(row):
         "hi": row["hi"],
         "color": row["color"],
         "created_at": row["created_at"],
+        "collab_uid": row["collab_uid"],
     }
 
 
@@ -102,13 +120,16 @@ def list_annotations(run_key):
         conn.close()
 
 
-def add_annotation(run_key, user_id, user_name, x0, x1, label, color):
+def add_annotation(
+    run_key, user_id, user_name, x0, x1, label, color, collab_uid=None, created_at=None
+):
     conn = connect_annotations()
     try:
         cur = conn.execute(
             """
-            INSERT INTO annotations (run_key, user_id, user_name, x0, x1, label, color, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO annotations
+                (run_key, user_id, user_name, x0, x1, label, color, created_at, collab_uid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_key,
@@ -118,7 +139,8 @@ def add_annotation(run_key, user_id, user_name, x0, x1, label, color):
                 float(x1),
                 str(label),
                 str(color),
-                _now(),
+                created_at or _now(),
+                collab_uid,
             ),
         )
         conn.commit()
@@ -129,9 +151,65 @@ def add_annotation(run_key, user_id, user_name, x0, x1, label, color):
 
 
 def delete_annotation(annotation_id):
+    """Deletes an annotation, remembering a tombstone if it was shared."""
+    conn = connect_annotations()
+    try:
+        row = conn.execute(
+            "SELECT collab_uid FROM annotations WHERE id = ?", (annotation_id,)
+        ).fetchone()
+        conn.execute("DELETE FROM annotations WHERE id = ?", (annotation_id,))
+        if row is not None and row["collab_uid"]:
+            conn.execute(
+                "INSERT OR IGNORE INTO collab_tombstones (uid, kind) VALUES (?, 'annotation')",
+                (row["collab_uid"],),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_annotation_without_tombstone(annotation_id):
     conn = connect_annotations()
     try:
         conn.execute("DELETE FROM annotations WHERE id = ?", (annotation_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_all_annotations():
+    conn = connect_annotations()
+    try:
+        rows = conn.execute("SELECT * FROM annotations ORDER BY id").fetchall()
+        return [_annotation_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_collab_uid(annotation_id, collab_uid):
+    conn = connect_annotations()
+    try:
+        conn.execute(
+            "UPDATE annotations SET collab_uid = ? WHERE id = ?", (collab_uid, annotation_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_tombstones(kind):
+    conn = connect_annotations()
+    try:
+        rows = conn.execute("SELECT uid FROM collab_tombstones WHERE kind = ?", (kind,))
+        return [row["uid"] for row in rows]
+    finally:
+        conn.close()
+
+
+def clear_tombstone(uid):
+    conn = connect_annotations()
+    try:
+        conn.execute("DELETE FROM collab_tombstones WHERE uid = ?", (uid,))
         conn.commit()
     finally:
         conn.close()
@@ -148,13 +226,16 @@ def list_rules(run_key):
         conn.close()
 
 
-def add_rule(run_key, user_id, user_name, name, channel, lo, hi, color):
+def add_rule(
+    run_key, user_id, user_name, name, channel, lo, hi, color, collab_uid=None, created_at=None
+):
     conn = connect_annotations()
     try:
         cur = conn.execute(
             """
-            INSERT INTO variable_rules (run_key, user_id, user_name, name, channel, lo, hi, color, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO variable_rules
+                (run_key, user_id, user_name, name, channel, lo, hi, color, created_at, collab_uid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_key,
@@ -165,7 +246,8 @@ def add_rule(run_key, user_id, user_name, name, channel, lo, hi, color):
                 float(lo) if lo is not None else None,
                 float(hi) if hi is not None else None,
                 str(color),
-                _now(),
+                created_at or _now(),
+                collab_uid,
             ),
         )
         conn.commit()
@@ -176,9 +258,45 @@ def add_rule(run_key, user_id, user_name, name, channel, lo, hi, color):
 
 
 def delete_rule(rule_id):
+    """Deletes a variable rule, remembering a tombstone if it was shared."""
+    conn = connect_annotations()
+    try:
+        row = conn.execute(
+            "SELECT collab_uid FROM variable_rules WHERE id = ?", (rule_id,)
+        ).fetchone()
+        conn.execute("DELETE FROM variable_rules WHERE id = ?", (rule_id,))
+        if row is not None and row["collab_uid"]:
+            conn.execute(
+                "INSERT OR IGNORE INTO collab_tombstones (uid, kind) VALUES (?, 'variable_rule')",
+                (row["collab_uid"],),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_rule_without_tombstone(rule_id):
     conn = connect_annotations()
     try:
         conn.execute("DELETE FROM variable_rules WHERE id = ?", (rule_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_all_rules():
+    conn = connect_annotations()
+    try:
+        rows = conn.execute("SELECT * FROM variable_rules ORDER BY id").fetchall()
+        return [_rule_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_rule_collab_uid(rule_id, collab_uid):
+    conn = connect_annotations()
+    try:
+        conn.execute("UPDATE variable_rules SET collab_uid = ? WHERE id = ?", (collab_uid, rule_id))
         conn.commit()
     finally:
         conn.close()

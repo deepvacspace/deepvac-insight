@@ -55,8 +55,11 @@ def deepvac_data_dir(tmp_path, monkeypatch):
     import app.services.auth_service as auth_service
     import app.services.backup_service as backup_service
     import app.services.chambers_service as chambers_service
+    import app.services.collab_host_service as collab_host_service
+    import app.services.collab_tls as collab_tls
     import app.services.data_service as data_service
     import app.services.derived_variables_service as derived_variables_service
+    import app.services.shared_runs_service as shared_runs_service
     import app.services.test_profiles_service as test_profiles_service
 
     monkeypatch.setattr(auth_service, "AUTH_DB", data_dir / "deepvac_users.sqlite3")
@@ -73,6 +76,13 @@ def deepvac_data_dir(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(alarms_service, "ALARMS_DB", data_dir / "deepvac_alarms.sqlite3")
     monkeypatch.setattr(chambers_service, "CHAMBERS_DB", data_dir / "deepvac_chambers.sqlite3")
+    monkeypatch.setattr(
+        collab_host_service, "COLLAB_HOST_DB", data_dir / "deepvac_collab_host.sqlite3"
+    )
+    monkeypatch.setattr(collab_tls, "HOST_TLS_DIR", data_dir / "collab")
+    monkeypatch.setattr(
+        shared_runs_service, "SHARED_RUNS_DB", data_dir / "deepvac_shared_runs.sqlite3"
+    )
     monkeypatch.setattr(
         test_profiles_service, "TEST_PROFILES_DB", data_dir / "deepvac_test_profiles.sqlite3"
     )
