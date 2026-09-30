@@ -94,3 +94,45 @@ def load_channels(run_key):
 
 def save_channels(run_key, channels):
     _settings().setValue(f"channels/{run_key}", list(channels))
+
+
+# ── Collaboration ────────────────────────────────────────────────────────
+
+
+def load_collab_host_enabled():
+    return _settings().value("collab/host_enabled", False, type=bool)
+
+
+def save_collab_host_enabled(enabled):
+    _settings().setValue("collab/host_enabled", bool(enabled))
+
+
+def load_collab_port(default=8765):
+    return int(_settings().value("collab/port", default))
+
+
+def save_collab_port(port):
+    _settings().setValue("collab/port", int(port))
+
+
+def load_collab_connection():
+    url = _settings().value("collab/host_url", "")
+    if not url:
+        return None
+    return {
+        "url": url,
+        "name": _settings().value("collab/host_name", "") or url,
+        "cert": _settings().value("collab/host_cert", ""),
+    }
+
+
+def save_collab_connection(url, name, cert_pem):
+    _settings().setValue("collab/host_url", url)
+    _settings().setValue("collab/host_name", name)
+    _settings().setValue("collab/host_cert", cert_pem)
+
+
+def clear_collab_connection():
+    _settings().remove("collab/host_url")
+    _settings().remove("collab/host_name")
+    _settings().remove("collab/host_cert")

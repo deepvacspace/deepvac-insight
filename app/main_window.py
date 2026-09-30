@@ -14,8 +14,9 @@ from PySide6.QtWidgets import (
 
 from app.common import ICON_PATH, _nav_icon, _svg_icon
 from app.monitor_tab import MonitorTabPage
-from app.services import i18n_service, settings_service
+from app.services import collab_client, i18n_service, settings_service
 from app.services.chamber_session import MAX_CONNECTED_CHAMBERS, ChamberSession
+from app.services.collab_server import CollabServer
 from app.services.opc_broadcast_server import OpcBroadcastServer
 from app.tab_system import EditorArea
 from app.title_bar import TitleBar
@@ -61,11 +62,13 @@ class DeepVacDesktop(
 
         self._chamber_sessions = {}  # chamber id -> ChamberSession, see _connect_chamber()
         self.opc_server = OpcBroadcastServer(self)
+        self.collab_server = CollabServer()
 
         self._build_ui()
 
         self.apply_theme()
         self.load_runs()
+        self._start_collab_host_if_enabled()
 
         # A daily backup already runs at process startup (app.app.main); this
         # periodic check covers sessions left open across a day boundary.
@@ -166,6 +169,7 @@ class DeepVacDesktop(
         self._persist_ui_state()
         if self.opc_server.is_running():
             self.opc_server.stop()
+        self.collab_server.stop()
         for session in list(self._chamber_sessions.values()):
             session.teardown()
         super().closeEvent(event)
@@ -405,6 +409,7 @@ class DeepVacDesktop(
         menu.addSeparator()
         act_profile = menu.addAction(self.tr("Profile"))
         act_directory = menu.addAction(self.tr("Organization Directory"))
+        act_collab = menu.addAction(self.tr("Collaboration"))
         act_logout = menu.addAction(self.tr("Log out"))
         btn = self.act_account_btn
         chosen = menu.exec(btn.mapToGlobal(QPoint(btn.width() + 4, 0)))
@@ -412,6 +417,8 @@ class DeepVacDesktop(
             self._show_profile_dialog()
         elif chosen == act_directory:
             self._show_org_directory_dialog()
+        elif chosen == act_collab:
+            self._show_collab_dialog()
         elif chosen == act_logout:
             self._logout()
 
@@ -428,6 +435,26 @@ class DeepVacDesktop(
 
         dlg = OrgDirectoryDialog(self)
         dlg.exec()
+
+    def _show_collab_dialog(self):
+        from app.collab_dialog import CollabDialog
+
+        dlg = CollabDialog(self.collab_server, self.current_user, self)
+        dlg.exec()
+
+    def _start_collab_host_if_enabled(self):
+        if not settings_service.load_collab_host_enabled():
+            return
+        try:
+            self.collab_server.start(settings_service.load_collab_port())
+        except OSError:
+            return
+        collab_client.connect_local(
+            self.collab_server.port,
+            self.collab_server.host_name,
+            self.current_user.get("name") or "Unknown",
+            self.collab_server.cert_pem,
+        )
 
     def _logout(self):
         from PySide6.QtCore import QSettings
