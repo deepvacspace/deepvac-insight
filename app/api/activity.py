@@ -18,7 +18,7 @@ _lock = threading.Lock()
 _events: deque = deque(maxlen=300)
 _ids = itertools.count(1)
 
-AGENT_NAMES = {"analyst": "Analyst", "worker": "Worker"}
+AGENT_NAMES = {"analyst": "Analyst", "worker": "Worker", "brain": "Brain"}
 
 
 def _runs(args):
@@ -92,6 +92,14 @@ def describe(tool: str, args: dict) -> str:
             f"waiting for your decision on request {a.get('request_id')} (Agent Requests)"
         ),
         "list_requests": lambda: "checking the requests",
+        "wiki_index": lambda: "reading the wiki's index",
+        "wiki_search": lambda: f"searching the wiki for '{a.get('query', '')}'",
+        "wiki_read": lambda: f"reading the wiki page '{a.get('page', '')}'",
+        "wiki_propose": lambda: (
+            f"proposing a change to the wiki page '{a.get('page', '')}' (waits for review)"
+        ),
+        "sql_schema": lambda: "reading the experiments database's tables",
+        "sql_query": lambda: "querying the experiments database",
     }
     try:
         return texts[tool]() if tool in texts else f"using {tool}"

@@ -2,6 +2,7 @@
 
     /analyst/mcp   read-only analysis of recorded runs (the Analyst agent)
     /worker/mcp    the chamber now, and requests to change it (the Worker agent)
+    /brain/mcp     the crew's knowledge: the wiki and the experiments database (the Professor)
     /activity      the agents' recent tool calls, for the app's chat
     /requests      chamber requests by id (?ids=1,2), for the app's chat
     /health        liveness, no token
@@ -41,6 +42,7 @@ from app.api.auth import (  # noqa: F401 (api_token is part of this module's API
     TOKEN_FILE,
     api_token,
 )
+from app.api.brain_tools import BrainTools
 from app.api.chambers import ChamberLinks
 from app.api.executor import RequestExecutor
 from app.api.worker_tools import WorkerTools, public_request
@@ -67,6 +69,12 @@ ANALYST_INSTRUCTIONS = (
     "Recorded DeepVac chamber experiments. Runs are numbered #1, #2, ... by start time (oldest first) and can "
     "also be named by title, 'latest' or 'previous'. Every number comes from the run data; quote them, don't "
     "estimate. Temperatures are in °C, times in seconds from the run start unless stated."
+)
+BRAIN_INSTRUCTIONS = (
+    "The DeepVac crew's knowledge. The wiki holds how the chamber works, procedures, limits, definitions and "
+    "lessons from experiments: search it (wiki_search) and read the pages (wiki_read) before planning, and quote "
+    "them. The experiments database answers questions over many runs in SQL (sql_schema first, then sql_query). "
+    "wiki_propose suggests a new page or a new version of one; a person approves it."
 )
 WORKER_INSTRUCTIONS = (
     "The DeepVac chamber now. Reading tools return live PLC values. request_* tools never change the chamber "
@@ -348,7 +356,52 @@ class BearerTokenMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_app(token: str, analyst: AnalystTools, worker: WorkerTools, host: str = DEFAULT_HOST):
+def build_brain_server(tools: BrainTools) -> MCPServer:
+    mcp = MCPServer("deepvac-brain", instructions=BRAIN_INSTRUCTIONS)
+
+    @expose(mcp, READ_ONLY)
+    def wiki_index() -> dict:
+        """Every wiki page with its type and one-line summary."""
+        return tools.wiki_index()
+
+    @expose(mcp, READ_ONLY)
+    def wiki_search(query: str, limit: int = 8) -> dict:
+        """Find wiki pages about a topic (words, not a question): the best matches with a snippet."""
+        return tools.wiki_search(query, limit)
+
+    @expose(mcp, READ_ONLY)
+    def wiki_read(page: str) -> dict:
+        """A wiki page in full (markdown), with its sources and the pages it links to and from."""
+        return tools.wiki_read(page)
+
+    @expose(mcp, REQUEST)
+    def wiki_propose(page: str, content: str, reason: str) -> dict:
+        """Propose a new wiki page or a new version of one: the whole page in markdown, starting with
+        frontmatter (title, type, tags, sources, updated) as the SCHEMA page describes, and the reason with its
+        evidence (run numbers). Nothing changes until a person approves it."""
+        return tools.wiki_propose(page, content, reason)
+
+    @expose(mcp, READ_ONLY)
+    def sql_schema() -> dict:
+        """The experiments database: its tables, what each column means and how many rows each holds."""
+        return tools.sql_schema()
+
+    @expose(mcp, READ_ONLY)
+    def sql_query(sql: str, max_rows: int = 50) -> dict:
+        """Run one read-only SELECT on the experiments database (SQLite); at most 200 rows. Aggregate and filter
+        in SQL rather than reading many rows."""
+        return tools.sql_query(sql, max_rows)
+
+    return mcp
+
+
+def build_app(
+    token: str,
+    analyst: AnalystTools,
+    worker: WorkerTools,
+    host: str = DEFAULT_HOST,
+    brain: BrainTools | None = None,
+):
     # Host header check against DNS rebinding: this machine, and n8n in Docker on it
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -363,12 +416,17 @@ def build_app(token: str, analyst: AnalystTools, worker: WorkerTools, host: str 
     worker_app = worker_mcp.streamable_http_app(
         streamable_http_path="/mcp", transport_security=security, host=host
     )
+    brain_mcp = build_brain_server(brain or BrainTools())
+    brain_app = brain_mcp.streamable_http_app(
+        streamable_http_path="/mcp", transport_security=security, host=host
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
         async with contextlib.AsyncExitStack() as stack:
             await stack.enter_async_context(analyst_mcp.session_manager.run())
             await stack.enter_async_context(worker_mcp.session_manager.run())
+            await stack.enter_async_context(brain_mcp.session_manager.run())
             yield
 
     async def health(_request):
@@ -400,6 +458,7 @@ def build_app(token: str, analyst: AnalystTools, worker: WorkerTools, host: str 
             Route("/requests", requests_by_id),
             Mount("/analyst", app=analyst_app),
             Mount("/worker", app=worker_app),
+            Mount("/brain", app=brain_app),
         ],
         lifespan=lifespan,
     )

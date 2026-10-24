@@ -125,6 +125,42 @@ recording (34 days, 32 or 44 channels):
 | zlib float64 column per channel | 6 | 0.19 (0.59) |
 | **Parquet, as recorded now** | **9.5** | **0.30 (0.68)** |
 
+## The Brain: wiki and experiments database
+
+The AI crew's knowledge, for the Professor (`/brain/mcp`):
+
+- **The wiki** (`wiki/`, markdown, versioned with the code; `app/services/wiki_service.py`):
+  what the data alone doesn't say. How the chamber works (refrigeration cascade, heater,
+  PLC), PID control, programs and the PLC status, alarms, limits and safety rules, four
+  procedures (manual setpoint, test profile, approving requests, alarm / finish), the KPI,
+  stage and anomaly definitions, where the data is, the digital twin, the crew, a glossary.
+  `wiki/SCHEMA.md` says how pages are written (frontmatter: title, type, tags, sources,
+  updated; links as `[[page]]`); `index.md` is rebuilt automatically, `log.md` records changes.
+  Three pages are **generated** from the data and never edited: `chamber-configuration`
+  (from `data/control_settings.json`), `experiment-history` and `pid-tuning-lessons` (step
+  responses by target and direction, with the gains that did best).
+- **The experiments database** (`data/deepvac_brain.sqlite3`, `app/services/brain_db.py`):
+  the run history as plain SQL tables (`experiments` with KPIs and gains, `stages`,
+  `anomalies`, `events`, `test_profiles`, `recordings`), every column described for the
+  agent (`sql_schema`). Queries are read-only: one SELECT, read-only connection, an authorizer
+  that refuses writes, at most 200 rows, 5 s.
+- **Agents propose, people approve.** `wiki_propose` stores a new page or a new version in
+  `data/deepvac_wiki_proposals.sqlite3`; gear menu → **Wiki Proposals** shows it as a diff
+  against the current page to approve or reject (a page that changed since is refused).
+  **Open Wiki Folder** opens the pages.
+
+Rebuild after adding runs (about 2 minutes for 1,100 runs; also regenerates the generated
+pages, the index and runs the wiki's lint):
+
+```powershell
+uv run python scripts/build_brain.py            # database + generated pages
+uv run python scripts/build_brain.py --pages-only
+```
+
+DeepVac Control's event log (`data/event/actions.dat`) is copied into
+`data/deepvac_control_log.sqlite3` by `scripts/import_control_data.py` and becomes the
+`events` rows with source `control log`.
+
 ## Analysis Export menu
 
 Each run tab in Analysis has DeepVac Control's Export menu
@@ -248,12 +284,13 @@ python tcp\dummy_chamber_server.py --port 5555
 ## Agent API
 
 An MCP server (`app/api/`) that the DeepVac crew of AI agents (`../agents`,
-n8n) calls. Two endpoints, one bearer token:
+n8n) calls. Three endpoints, one bearer token:
 
 | Endpoint | For | Tools |
 |---|---|---|
 | `http://127.0.0.1:8765/analyst/mcp` | Analyst | list / rank runs, run summary, stages, KPIs, statistics, anomalies, compare runs, channels, events, PID simulation on the GRU twin, full-day recordings (list_recordings, get_recording), and exports (below). Read-only. |
 | `http://127.0.0.1:8765/worker/mcp` | Worker | chambers, live status, PLC settings, programs; requests to set a temperature, run a program or stop |
+| `http://127.0.0.1:8765/brain/mcp` | Professor | the Brain (below): wiki index, search, read and proposals; the experiments database's schema and read-only SQL |
 
 The analyst's exports copy DeepVac Control's Export menu
 (`app/services/run_export.py`) and write into the reports folder

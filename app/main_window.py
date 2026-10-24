@@ -380,6 +380,13 @@ class DeepVacDesktop(
             if pending
             else self.tr("Agent Requests…")
         )
+        wiki_pending = self._pending_wiki_proposals()
+        act_wiki_proposals = menu.addAction(
+            self.tr("Wiki Proposals ({0} pending)…").format(wiki_pending)
+            if wiki_pending
+            else self.tr("Wiki Proposals…")
+        )
+        act_wiki_folder = menu.addAction(self.tr("Open Wiki Folder"))
         act_agent_api = menu.addAction(self.tr("Agent API"))
         act_agent_api.setCheckable(True)
         act_agent_api.setChecked(self.agent_api is not None)
@@ -408,6 +415,10 @@ class DeepVacDesktop(
             self._open_backups_folder()
         elif chosen == act_agent_requests:
             self._show_agent_requests()
+        elif chosen == act_wiki_proposals:
+            self._show_wiki_proposals()
+        elif chosen == act_wiki_folder:
+            self._open_wiki_folder()
         elif chosen == act_agent_api:
             self._toggle_agent_api(act_agent_api.isChecked())
         elif chosen == act_agent_token:
@@ -569,6 +580,29 @@ class DeepVacDesktop(
         if pending > self._known_pending_requests:
             self._show_agent_requests()
         self._known_pending_requests = pending
+
+    # ── The crew's wiki (the Brain) ──────────────────────────────────────────
+
+    def _pending_wiki_proposals(self):
+        from app.services import wiki_service
+
+        try:
+            return len(wiki_service.list_proposals(wiki_service.PENDING))
+        except Exception:
+            return 0
+
+    def _show_wiki_proposals(self):
+        from app.wiki_proposals_dialog import WikiProposalsDialog
+
+        WikiProposalsDialog(self.current_user, self).exec()
+
+    def _open_wiki_folder(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from app.services import wiki_service
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(wiki_service.wiki_dir())))
 
     def _show_agent_requests(self):
         from app.agent_requests_dialog import AgentRequestsDialog

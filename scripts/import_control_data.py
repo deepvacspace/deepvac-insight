@@ -6,7 +6,9 @@ What it copies (never deletes anything; re-running it skips what is already here
 - test profiles: by name, with their steps and PLC program (program_json);
 - the chamber PLC (settings.json "tcp_server") as a chamber with protocol "plc";
 - settings.json itself, as data/control_settings.json: the chamber's state,
-  program, alarm and PLC settings definitions the PLC gate and the agent API use.
+  program, alarm and PLC settings definitions the PLC gate and the agent API use;
+- the event log (data/event/actions.dat: application, operator and PLC messages)
+  into data/deepvac_control_log.sqlite3, for the Brain (scripts/build_brain.py).
 
 Before writing, each Insight database it touches is copied to
 data/backups/<name>/<name>_before_control_import_<time>.sqlite3.
@@ -24,7 +26,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.common import DATA_DIR  # noqa: E402
-from app.services import chambers_service, data_service, test_profiles_service  # noqa: E402
+from app.services import (  # noqa: E402
+    brain_db,
+    chambers_service,
+    data_service,
+    test_profiles_service,
+)
 
 CONTROL_SETTINGS_FILE = "control_settings.json"
 
@@ -202,6 +209,13 @@ def main():
             print(f"settings:      {target}")
     else:
         print(f"settings:      {settings_path} not found, skipped")
+    actions = data_dir / "event" / "actions.dat"
+    if actions.exists():
+        if args.dry_run:
+            print(f"event log:     {len(brain_db.read_actions_dat(actions))} messages in {actions}")
+        else:
+            added = brain_db.import_control_log(actions)
+            print(f"event log:     {added} new messages into {brain_db.control_log_path()}")
     if args.dry_run:
         print("dry run: nothing was changed")
 

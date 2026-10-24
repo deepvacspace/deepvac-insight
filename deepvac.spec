@@ -44,6 +44,8 @@ a = Analysis(
 )
 
 a.datas += resources_tree
+# the crew's wiki: seeds DATA_DIR/wiki on first run (app/services/wiki_service.py)
+a.datas += Tree('wiki', prefix='wiki', excludes=['*.tmp'])
 
 pyz = PYZ(a.pure, a.zipped_data)
 
