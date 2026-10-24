@@ -70,7 +70,7 @@ class DeepVacDesktop(
         # chat with the agent crew: floating button at the bottom right
         from app.agent_chat import AgentChat
 
-        self.agent_chat = AgentChat(self.centralWidget())
+        self.agent_chat = AgentChat(self.centralWidget(), api_source=self._agent_api_source)
 
         self.apply_theme()
         self._open_live_tab()  # first, so it stays the leftmost Analysis tab
@@ -473,6 +473,15 @@ class DeepVacDesktop(
         else:
             self._stop_agent_api()
             settings_service.save_agent_api_enabled(False)
+
+    def _agent_api_source(self):
+        """Where the chat reads the agents' activity: this app's Agent API, or the default
+        address of one started with `python -m app.api`."""
+        if self.agent_api is not None:
+            return self.agent_api.url, self.agent_api.token
+        from app.api.auth import DEFAULT_URL, api_token
+
+        return DEFAULT_URL, api_token()
 
     def _copy_agent_api_token(self):
         from PySide6.QtWidgets import QApplication
@@ -1028,6 +1037,10 @@ class DeepVacDesktop(
             QLabel#chatAgentMsg {{
                 background: {c["hover"]}; color: {c["text"]}; padding: 8px 11px; border-radius: 10px;
                 border: 1px solid {c["border"]};
+            }}
+            QLabel#chatStepsMsg {{
+                background: transparent; color: {c["muted"]}; padding: 4px 6px; font-size: 8.5pt;
+                border-left: 2px solid {c["border"]};
             }}
             QLabel#chatErrorMsg {{
                 background: transparent; color: #f87171; padding: 8px 11px; border-radius: 10px;

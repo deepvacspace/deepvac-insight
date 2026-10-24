@@ -12,7 +12,7 @@ from app.api import control_settings
 from app.api.analyst_tools import n
 from app.api.chambers import ChamberError, ChamberLinks
 from app.services import agent_requests_service as requests_service
-from app.services import plc_gate, test_profiles_service
+from app.services import plc_gate, plc_programs, test_profiles_service
 
 STALE_AFTER_S = 15.0  # live values older than this are reported as stale
 MAX_RAMP_C_PER_MIN = 20.0
@@ -103,35 +103,29 @@ class WorkerTools:
         }
 
     def list_programs(self) -> dict:
+        enable = control_settings.enable_flags(control_settings.load())
         programs = []
         for p in test_profiles_service.list_profiles():
-            program = p.get("program")
-            if program:
-                intervals = program.get("intervals", [])
-                total = sum(float(i.get("duration", 0)) for i in intervals)
-                programs.append(
+            item = {"name": p["name"], "description": p["description"]}
+            try:
+                intervals, cycle = plc_programs.program_for_profile(p, enable)
+            except plc_programs.ProgramError as exc:
+                item.update({"runnable": False, "note": str(exc)})
+            else:
+                item.update(
                     {
-                        "name": p["name"],
-                        "description": p["description"],
                         "intervals": len(intervals),
                         "setpoints_c": sorted(
                             {i.get("temp") for i in intervals if i.get("temp") is not None}
                         ),
-                        "duration_h": n(total / 3600.0, 4),
-                        "cycles": program.get("cycle", {}).get("count", 0),
+                        "duration_h": n(
+                            plc_programs.total_duration_s(intervals, cycle) / 3600.0, 4
+                        ),
+                        "cycles": int(cycle.get("count", 0)),
                         "runnable": True,
                     }
                 )
-            else:
-                programs.append(
-                    {
-                        "name": p["name"],
-                        "description": p["description"],
-                        "steps": len(p["steps"]),
-                        "runnable": False,
-                        "note": "no PLC program (made in Insight); run it from Live Monitoring",
-                    }
-                )
+            programs.append(item)
         return {"programs": programs}
 
     # ------------------------------------------------------------ requests
@@ -182,18 +176,14 @@ class WorkerTools:
         )
         if profile is None:
             raise ChamberError(f"No program named '{program}'. Use list_programs.")
-        if not profile.get("program"):
-            raise ChamberError(
-                f"'{profile['name']}' has no PLC program; it can only run from Live Monitoring."
+        settings = control_settings.load()
+        try:
+            intervals, _ = plc_programs.program_for_profile(
+                profile, control_settings.enable_flags(settings)
             )
-        lo, hi = control_settings.temperature_limits(control_settings.load())
-        temps = [
-            i.get("temp")
-            for i in profile["program"].get("intervals", [])
-            if i.get("temp") is not None
-        ]
-        if any(not lo <= t <= hi for t in temps):
-            raise ChamberError(f"'{profile['name']}' has setpoints outside {lo:g} … {hi:g} °C.")
+            plc_programs.check_limits(intervals, *control_settings.temperature_limits(settings))
+        except plc_programs.ProgramError as exc:
+            raise ChamberError(str(exc)) from exc
         if not reason or not reason.strip():
             raise ChamberError("Give the reason: the operator sees it when deciding.")
         summary = f"Run program '{profile['name']}' on {ch['name']}"
@@ -279,11 +269,11 @@ def execute_request(links: ChamberLinks, request: dict) -> str:
         profile = next(
             (x for x in test_profiles_service.list_profiles() if x["name"] == p["program"]), None
         )
-        if profile is None or not profile.get("program"):
+        if profile is None:
             raise ChamberError(f"Program '{p['program']}' is gone.")
-        program = profile["program"]
-        client.send_job(
-            plc_gate.PROG_TYPE_PROG, program["intervals"], params_spec, program.get("cycle")
+        intervals, cycle = plc_programs.program_for_profile(
+            profile, control_settings.enable_flags(settings)
         )
-        return f"program job sent ({len(program['intervals'])} intervals)"
+        client.send_job(plc_gate.PROG_TYPE_PROG, intervals, params_spec, cycle)
+        return f"program job sent ({len(intervals)} intervals)"
     raise ChamberError(f"Unknown request kind {request['kind']}")

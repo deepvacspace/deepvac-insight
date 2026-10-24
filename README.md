@@ -142,7 +142,8 @@ current (possibly damaged) database first, so a bad restore can be undone.
 
 Chambers are added and edited on the **Controller** page (**Chamber
 Settings…**) and connected there with **Connect**; the Controller also holds
-the manual setpoint, test profiles and each chamber's alarm rules. A
+the manual setpoint, test profiles and each chamber's alarm rules (for a PLC
+chamber, the PLC control described under *Chamber control* below). A
 connected chamber's live data, stages, KPIs and anomalies are followed in
 Analysis' **● Live** tab, which also saves the recording as a run
 (Live Monitoring, the old per-chamber page, was removed). Disconnecting a
@@ -216,6 +217,14 @@ change it with gear menu → **Agent Chat URL…**). The workflow must be
 published in n8n. **New chat** starts a conversation the crew doesn't
 remember.
 
+While the crew works the chat shows its progress: which agent is busy
+(streamed by n8n's chat webhook) and, when the Agent API is on, what each
+one does through it, in plain words ("Analyst: reading the summary of run
+12 ✓"), from the API's `/activity` feed (same bearer token). The answer is
+streamed in as the Professor writes it, and the steps stay above it,
+folded into a summary. A workflow whose Chat node doesn't stream still
+works; its answer just arrives at the end.
+
 ### Analysis Live tab
 
 The first Analysis tab, **● Live**, follows the experiment running on a PLC
@@ -240,9 +249,27 @@ chamber:
 uv run python scripts/fake_plc.py --port 4321
 ```
 
-The job encoding (manual setpoint, programs) mirrors control2-client and has
-been checked against the fake PLC only: try it on a test chamber before
-relying on it.
+With a PLC chamber selected, the Controller page shows its control (as
+control2-client's program control does; `app/plc_control.py`). Operator
+commands go to the PLC directly, without the approval queue:
+
+- **Status**: state, temperature and setpoint, output, interval and cycle,
+  job time and active alarms; **Next Interval**, **Stop** (asks first),
+  **Confirm Finish** when a job has finished and **Confirm Alarm**.
+- **Manual setpoint**: a temperature within the chamber's limits, with an
+  optional ramp rate (°C/min) and hold time (minutes); without a hold it is
+  held until stopped.
+- **Program**: a test profile (**Manage Test Profiles…**) sent as a PLC
+  program; its intervals are listed before you start it. Profiles imported
+  from control2-client run as they are; profiles made here run each step as
+  "go to the temperature and hold it for the step's duration"
+  (`app/services/plc_programs.py`, shared with the worker's
+  `list_programs` / `request_program`). Steps without a temperature can't
+  run on the PLC.
+
+Starting a setpoint or program while a job runs asks before replacing it.
+The job encoding mirrors control2-client and has been checked against the
+fake PLC only: try it on a test chamber before relying on it.
 
 ### Analysis Core
 

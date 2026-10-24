@@ -90,3 +90,98 @@ def test_explains_when_the_crew_is_not_there(chat):
     chat.panel.show_reply(False, 404, "", "Not Found")
     role, text = chat.panel.messages()[-1]
     assert role == "error" and "published" in text
+
+
+def _streaming_server(events, delay_s=0.15):
+    """A stand-in for the crew's chat webhook in "streaming" mode: one JSON event per line."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            import time
+
+            self.rfile.read(int(self.headers["content-length"]))
+            self.send_response(200)
+            self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("transfer-encoding", "chunked")
+            self.end_headers()
+            for event in events:
+                line = (json.dumps(event) + "\n").encode()
+                self.wfile.write(f"{len(line):x}\r\n".encode() + line + b"\r\n")
+                self.wfile.flush()
+                time.sleep(delay_s)
+            self.wfile.write(b"0\r\n\r\n")
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _event(kind, node, content=None):
+    event = {"type": kind, "metadata": {"nodeName": node, "nodeId": "x"}}
+    if content is not None:
+        event["content"] = content
+    return event
+
+
+def test_streams_the_answer_and_shows_the_crew_working(chat, qtbot, monkeypatch):
+    events = [
+        _event("begin", "Professor"),
+        _event("end", "Professor"),
+        _event("begin", "analyst"),
+        _event(
+            "item", "analyst", "Run #12 has the lowest tail MAE."
+        ),  # for the Professor, not shown
+        _event("end", "analyst"),
+        _event("begin", "Professor"),
+        _event("item", "Professor", "**Run #12** "),
+        _event("item", "Professor", "settled best."),
+        _event("end", "Professor"),
+    ]
+    server = _streaming_server(events)
+    url = f"http://127.0.0.1:{server.server_port}/webhook/test/chat"
+    monkeypatch.setattr(settings_service, "load_agent_chat_url", lambda: url)
+    panel = chat.panel
+    panel.input.setText("which run settled best?")
+    panel.send()
+    qtbot.waitUntil(
+        lambda: any(r == "steps" and "Analyst: working" in t for r, t in panel.messages()),
+        timeout=10_000,
+    )
+    qtbot.waitUntil(lambda: panel._reply is None, timeout=10_000)
+    server.shutdown()
+
+    roles = [role for role, _ in panel.messages()]
+    assert roles[-3:] == ["user", "steps", "agent"]  # the steps stay above the answer
+    steps = panel.messages()[-2][1]
+    assert "✓ Analyst: working" in steps and "Professor" in steps and "working…" not in steps
+    answer = panel.messages()[-1][1]
+    assert answer == "**Run #12** settled best."  # the specialist's text is not part of it
+
+
+def test_activity_feed_adds_what_each_agent_does(chat):
+    panel = chat.panel
+    panel._start_turn()
+    panel.show_activity(
+        [
+            {
+                "id": 1,
+                "agent": "Analyst",
+                "text": "reading the summary of run #12",
+                "status": "done",
+            },
+            {
+                "id": 2,
+                "agent": "Worker",
+                "text": "reading the chamber's live status",
+                "status": "running",
+            },
+        ]
+    )
+    steps = panel.messages()[-1][1]
+    assert "✓ Analyst: reading the summary of run #12" in steps
+    assert "… Worker: reading the chamber's live status" in steps
+    panel._set_working(False)
+    assert "… " not in panel.messages()[-1][1]  # all marked done in the summary

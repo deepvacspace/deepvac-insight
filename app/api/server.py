@@ -16,10 +16,10 @@ import argparse
 import contextlib
 import functools
 import hmac
+import inspect
 import json
 import logging
 import os
-import secrets
 import threading
 
 import uvicorn
@@ -32,7 +32,12 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 import app.common as common
+from app.api import activity
 from app.api.analyst_tools import AnalystTools
+from app.api.auth import (  # noqa: F401 (api_token is part of this module's API)
+    TOKEN_FILE,
+    api_token,
+)
 from app.api.chambers import ChamberLinks
 from app.api.executor import RequestExecutor
 from app.api.worker_tools import WorkerTools
@@ -41,7 +46,6 @@ log = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-TOKEN_FILE = "agent_api_token"
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
 REQUEST = ToolAnnotations(
@@ -60,31 +64,32 @@ WORKER_INSTRUCTIONS = (
 )
 
 
-def api_token() -> str:
-    token = os.environ.get("DEEPVAC_AGENT_API_TOKEN", "").strip()
-    if token:
-        return token
-    path = common.DATA_DIR / TOKEN_FILE
-    if path.exists():
-        return path.read_text(encoding="utf-8").strip()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    path.write_text(token, encoding="utf-8")
-    return token
-
-
 def expose(mcp: MCPServer, annotations: ToolAnnotations):
     """Registers a tool; expected failures (a run or chamber that doesn't exist, a value outside the
     chamber's limits, the PLC offline) reach the agent with their message so it can correct itself.
     Anything else is a crash: logged here, reported to the agent without details."""
 
+    agent = mcp.name.rsplit("-", 1)[-1]  # "deepvac-analyst" -> "analyst"
+
     def register(fn):
+        signature = inspect.signature(fn)
+
         @functools.wraps(fn)
         def tool(*args, **kwargs):
             try:
+                called_with = dict(signature.bind_partial(*args, **kwargs).arguments)
+            except TypeError:
+                called_with = dict(kwargs)
+            event = activity.started(agent, fn.__name__, called_with)  # shown in the app's chat
+            try:
                 result = fn(*args, **kwargs)
             except (ValueError, LookupError, RuntimeError, ConnectionError) as exc:
+                activity.finished(event, ok=False)
                 raise ToolError(str(exc)) from exc
+            except Exception:
+                activity.finished(event, ok=False)
+                raise
+            activity.finished(event, ok=True)
             # compact JSON text: an LLM reads it, and indented / structured duplicates cost tokens
             return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
@@ -296,9 +301,18 @@ def build_app(token: str, analyst: AnalystTools, worker: WorkerTools, host: str 
     async def health(_request):
         return JSONResponse({"ok": True, "service": "deepvac-agent-api"})
 
+    async def recent_activity(request):
+        """The agents' tool calls since ?since=<epoch s>, for the chat's progress lines."""
+        try:
+            since = float(request.query_params.get("since", "0"))
+        except ValueError:
+            since = 0.0
+        return JSONResponse({"events": activity.since(since)})
+
     starlette = Starlette(
         routes=[
             Route("/health", health),
+            Route("/activity", recent_activity),
             Mount("/analyst", app=analyst_app),
             Mount("/worker", app=worker_app),
         ],

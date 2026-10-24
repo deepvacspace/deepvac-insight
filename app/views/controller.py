@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 import app.services.chambers_service as chambers_service
 import app.services.test_profiles_service as test_profiles_service
 from app.chamber_alarms import ChamberAlarmsPanel
+from app.plc_control import PlcControlPanel
 from app.services.chamber_session import MAX_CONNECTED_CHAMBERS
 
 
@@ -61,6 +62,8 @@ class ControllerMixin:
 
         self._ctrl_chambers = {}  # saved chambers by id, see _refresh_controller_chamber_choices()
         self._ctrl_alarms = ChamberAlarmsPanel(current_user=self.current_user)
+        self._ctrl_plc_panel = PlcControlPanel(self.plc_links, current_user=self.current_user)
+        self._ctrl_plc_panel.setVisible(False)
 
         # ── Chamber: pick, connect, settings ─────────────────────────────────
         chamber_card = QFrame()
@@ -108,7 +111,7 @@ class ControllerMixin:
         outer.addWidget(chamber_card)
 
         # ── Manual Setpoint ──────────────────────────────────────────────────
-        manual_card = QFrame()
+        manual_card = self._ctrl_manual_card = QFrame()
         manual_card.setObjectName("card")
         mnl = QVBoxLayout(manual_card)
         mnl.setContentsMargins(14, 14, 14, 14)
@@ -145,7 +148,7 @@ class ControllerMixin:
         outer.addWidget(manual_card)
 
         # ── Test Profiles ────────────────────────────────────────────────────
-        profiles_card = QFrame()
+        profiles_card = self._ctrl_profiles_card = QFrame()
         profiles_card.setObjectName("card")
         pfl = QVBoxLayout(profiles_card)
         pfl.setContentsMargins(14, 14, 14, 14)
@@ -184,6 +187,9 @@ class ControllerMixin:
 
         self._load_test_profiles()
         outer.addWidget(profiles_card)
+
+        # ── Chamber PLC: manual setpoint and program control ─────────────────
+        outer.addWidget(self._ctrl_plc_panel, 1)
 
         # ── Alarms (sample-feed chambers) ────────────────────────────────────
         outer.addWidget(self._ctrl_alarms, 1)
@@ -341,8 +347,8 @@ class ControllerMixin:
             status = self.tr("No saved chambers — add one with Chamber Settings….")
         elif is_plc:
             status = self.tr(
-                "{0} is a chamber PLC: it connects by itself and is followed in Analysis → Live; "
-                "the agents control it through the Agent API, with your approval."
+                "{0} is a chamber PLC: it connects by itself, is controlled below and followed in "
+                "Analysis → Live. Agents' requests for it wait in Agent Requests."
             ).format(chamber["name"])
         elif session is None:
             status = self.tr("Not connected — {0} ({1}:{2})").format(
@@ -372,6 +378,12 @@ class ControllerMixin:
         if (self._ctrl_alarms.chamber, self._ctrl_alarms.session) != (alarms_target, session):
             self._ctrl_alarms.set_target(alarms_target, session)
         self._ctrl_alarms.setVisible(not is_plc)
+        # a PLC has its own manual and program control; the cards above drive sample feeds
+        self._ctrl_manual_card.setVisible(not is_plc)
+        self._ctrl_profiles_card.setVisible(not is_plc)
+        self._ctrl_plc_panel.setVisible(is_plc)
+        if is_plc and self._ctrl_plc_panel.chamber != chamber:
+            self._ctrl_plc_panel.set_chamber(chamber)
         self._update_manual_status_label(session)
         self._update_test_status_label(session)
         self._update_controller_buttons(session)
