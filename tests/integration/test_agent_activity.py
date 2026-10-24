@@ -46,3 +46,29 @@ def test_activity_route_needs_the_token(deepvac_data_dir):
             "events"
         ]
     assert events[-1]["text"] == "reading the chamber's live status"
+
+
+def test_request_tools_name_their_request_and_the_chat_can_follow_it(deepvac_data_dir):
+    import asyncio
+
+    from app.services import agent_requests_service, chambers_service
+
+    activity.clear()
+    tools = WorkerTools(ChamberLinks())
+    plc = chambers_service.add_chamber("PLC", "127.0.0.1", 1, protocol="plc")
+    request = agent_requests_service.create_request("stop", plc, {}, "Stop the job on PLC")
+    mcp = server.build_worker_server(tools)
+    asyncio.run(mcp.call_tool("get_request", {"request_id": request["id"]}))
+    event = activity.since(0)[-1]
+    assert (event["request"], event["request_state"]) == (request["id"], "pending")
+
+    app = server.build_app("secret", AnalystTools(), tools)
+    agent_requests_service.decide(request["id"], False, "Ana", "not now")
+    with TestClient(app) as client:
+        assert client.get(f"/requests?ids={request['id']}").status_code == 401
+        found = client.get(
+            f"/requests?ids={request['id']},999", headers={"Authorization": "Bearer secret"}
+        ).json()["requests"]
+    assert [(r["id"], r["status"], r["decision_comment"]) for r in found] == [
+        (request["id"], "rejected", "not now")
+    ]

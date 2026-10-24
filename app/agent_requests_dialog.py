@@ -101,7 +101,9 @@ class AgentRequestsDialog(QDialog):
                 request["summary"],
                 request["reason"],
                 request["requested_by"],
-                request["status"],
+                f"{request['status']} · job {request['job_state']}"
+                if request.get("job_state")
+                else request["status"],
                 outcome,
             ]
             for col, value in enumerate(values):

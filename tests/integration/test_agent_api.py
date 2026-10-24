@@ -180,3 +180,64 @@ def test_http_app_needs_the_token(deepvac_data_dir):
             ).status_code
             == 401
         )
+
+
+def _run_until(executor, request_id, done, timeout=15.0):
+    """Runs the executor until done(request) holds; returns the request states seen."""
+    seen = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        executor.run_once()
+        request = agent_requests_service.get_request(request_id)
+        if not seen or seen[-1] != request["job_state"]:
+            seen.append(request["job_state"])
+        if done(request):
+            return seen
+        time.sleep(0.1)
+    raise AssertionError(f"request {request_id} never got there: {seen}")
+
+
+def test_the_worker_waits_for_the_decision_and_the_job_is_followed(worker, monkeypatch):
+    from app.api import worker_tools
+
+    monkeypatch.setattr(worker_tools, "WAIT_POLL_S", 0.1)
+    tools, links = worker
+    request = tools.request_setpoint(30, "short soak", "Fake PLC", hold_minutes=0.05)  # 3 s
+    undecided = tools.wait_for_request(request["id"], timeout_s=1)
+    assert undecided["status"] == "pending" and "hasn't decided" in undecided["next"]
+
+    executor = RequestExecutor(links)
+
+    def operator():
+        time.sleep(0.5)
+        agent_requests_service.decide(request["id"], True, "Operator")
+        executor.run_once()
+
+    threading.Thread(target=operator, daemon=True).start()
+    decided = tools.wait_for_request(request["id"], timeout_s=10)
+    assert decided["status"] == "executed" and decided["decided_by"] == "Operator"
+    assert decided["job_state"] in ("starting", "running") and "under way" in decided["next"]
+
+    seen = _run_until(executor, request["id"], lambda r: r["job_state"] == "finished")
+    assert "running" in seen
+    done = agent_requests_service.get_request(request["id"])
+    assert done["job_started_at"] and done["job_ended_at"] > done["job_started_at"]
+
+
+def test_a_job_replaced_by_another_and_a_stopped_job(worker):
+    tools, links = worker
+    executor = RequestExecutor(links)
+    first = tools.request_setpoint(30, "hold until stopped", "Fake PLC")
+    agent_requests_service.decide(first["id"], True, "Operator")
+    _run_until(executor, first["id"], lambda r: r["job_state"] == "running")
+
+    second = tools.request_setpoint(35, "warmer", "Fake PLC")
+    agent_requests_service.decide(second["id"], True, "Operator")
+    _run_until(executor, second["id"], lambda r: r["job_state"] == "running")
+    assert agent_requests_service.get_request(first["id"])["job_state"] == "replaced"
+
+    stop = tools.request_stop("done", "Fake PLC")
+    agent_requests_service.decide(stop["id"], True, "Operator")
+    _run_until(executor, second["id"], lambda r: r["job_state"] == "stopped")
+    stopped = agent_requests_service.get_request(stop["id"])
+    assert stopped["status"] == "executed" and stopped["job_state"] is None

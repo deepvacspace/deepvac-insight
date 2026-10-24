@@ -1042,6 +1042,10 @@ class DeepVacDesktop(
                 background: transparent; color: {c["muted"]}; padding: 4px 6px; font-size: 8.5pt;
                 border-left: 2px solid {c["border"]};
             }}
+            QLabel#chatNoticeMsg {{
+                background: transparent; color: {c["text"]}; padding: 4px 6px; font-size: 8.5pt;
+                border-left: 2px solid {c["accent"]};
+            }}
             QLabel#chatErrorMsg {{
                 background: transparent; color: #f87171; padding: 8px 11px; border-radius: 10px;
                 border: 1px solid #f87171;

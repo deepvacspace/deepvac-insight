@@ -196,6 +196,20 @@ chamber: they create a request in `data\deepvac_agent_requests.sqlite3`. The
 arrives) shows it; a signed-in user approves or rejects it, and only then
 does the API send it to the PLC. Undecided requests expire after 30 minutes.
 
+The loop closes in two steps:
+
+- **Within the crew's turn**, the worker calls `wait_for_request`, which
+  waits up to 3 minutes for the operator's decision and returns it.
+- **After the turn**, the executor follows the job an executed setpoint or
+  program started, until it ends: `job_state` goes `starting` → `running`
+  → `finished` | `stopped` | `alarm` | `replaced` (`unknown` if the PLC
+  never reports it running). The chat follows the requests its crew made
+  (`GET /requests?ids=`, same token). When one is decided, sent or its job
+  ends, a notice appears in the chat. If the crew hasn't already seen that
+  through its own tools, the chat also sends it an update in the same
+  conversation ("[Update from DeepVac Insight…]"), and the Professor tells
+  you what it means.
+
 Turn it on with gear menu → **Agent API** (remembered), or run it without
 the desktop app:
 

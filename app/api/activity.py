@@ -3,7 +3,10 @@ described in plain words ("Analyst: comparing runs #12, #13").
 
 Kept in memory (the last few hundred calls) and served at GET /activity, so
 the chat in the app can show the crew's progress while it works on an
-answer. Nothing here is stored.
+answer. A call that returned a chamber request also records its id and the
+state the agent saw ("request" / "request_state"), so the chat knows which
+requests this conversation made and what the crew already knows of them.
+Nothing here is stored.
 """
 
 import itertools
@@ -65,6 +68,9 @@ def describe(tool: str, args: dict) -> str:
         ),
         "request_stop": lambda: "requesting a stop (waits for your approval)",
         "get_request": lambda: f"checking request {a.get('request_id')}",
+        "wait_for_request": lambda: (
+            f"waiting for your decision on request {a.get('request_id')} (Agent Requests)"
+        ),
         "list_requests": lambda: "checking the requests",
     }
     try:
@@ -89,13 +95,23 @@ def started(agent: str, tool: str, args: dict) -> int:
     return event_id
 
 
-def finished(event_id: int, ok: bool) -> None:
+def finished(event_id: int, ok: bool, request: dict | None = None) -> None:
+    """request: the chamber request the call returned (worker_tools.public_request), if any."""
     with _lock:
         for event in reversed(_events):
             if event["id"] == event_id:
                 event["status"] = "done" if ok else "error"
                 event["seconds"] = round(time.time() - event["time"], 2)
+                if request and request.get("id") is not None:
+                    event["request"] = request["id"]
+                    event["request_state"] = request_state(request)
                 return
+
+
+def request_state(request: dict) -> str:
+    """'status' or 'status/job_state': what changed about a request, for the chat."""
+    job = request.get("job_state")
+    return f"{request.get('status')}/{job}" if job else str(request.get("status"))
 
 
 def since(timestamp: float, limit: int = 50) -> list[dict]:

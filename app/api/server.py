@@ -2,6 +2,8 @@
 
     /analyst/mcp   read-only analysis of recorded runs (the Analyst agent)
     /worker/mcp    the chamber now, and requests to change it (the Worker agent)
+    /activity      the agents' recent tool calls, for the app's chat
+    /requests      chamber requests by id (?ids=1,2), for the app's chat
     /health        liveness, no token
 
 Splitting the endpoints keeps each agent to its own tools whatever its MCP
@@ -40,7 +42,8 @@ from app.api.auth import (  # noqa: F401 (api_token is part of this module's API
 )
 from app.api.chambers import ChamberLinks
 from app.api.executor import RequestExecutor
-from app.api.worker_tools import WorkerTools
+from app.api.worker_tools import WorkerTools, public_request
+from app.services import agent_requests_service as requests_service
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +51,13 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
+REQUEST_TOOLS = (
+    "request_setpoint",
+    "request_program",
+    "request_stop",
+    "get_request",
+    "wait_for_request",
+)  # their result is one request: the activity feed notes its id and state
 REQUEST = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
 )
@@ -59,8 +69,9 @@ ANALYST_INSTRUCTIONS = (
 )
 WORKER_INSTRUCTIONS = (
     "The DeepVac chamber now. Reading tools return live PLC values. request_* tools never change the chamber "
-    "themselves: they create a request an operator approves or rejects in DeepVac Insight, and get_request "
-    "reports what happened. Never describe a requested change as done until get_request says 'executed'."
+    "themselves: they create a request an operator approves or rejects in DeepVac Insight. wait_for_request "
+    "waits for that decision (up to a few minutes) and get_request reports the status. Never describe a "
+    "requested change as done until the status is 'executed'."
 )
 
 
@@ -89,7 +100,8 @@ def expose(mcp: MCPServer, annotations: ToolAnnotations):
             except Exception:
                 activity.finished(event, ok=False)
                 raise
-            activity.finished(event, ok=True)
+            request = result if fn.__name__ in REQUEST_TOOLS and isinstance(result, dict) else None
+            activity.finished(event, ok=True, request=request)
             # compact JSON text: an LLM reads it, and indented / structured duplicates cost tokens
             return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
@@ -250,6 +262,13 @@ def build_worker_server(tools: WorkerTools) -> MCPServer:
         return tools.get_request(request_id)
 
     @expose(mcp, READ_ONLY)
+    def wait_for_request(request_id: int, timeout_s: float = 120) -> dict:
+        """Wait until the operator decides on a request and it is sent to the chamber (or rejected, failed,
+        expired); at most 180 s. Returns the status; a request still pending after that is decided later,
+        and DeepVac Insight tells the chat then."""
+        return tools.wait_for_request(request_id, timeout_s)
+
+    @expose(mcp, READ_ONLY)
     def list_requests(status: str = "", limit: int = 10) -> dict:
         """Recent requests, newest first, optionally only one status."""
         return tools.list_requests(status, limit)
@@ -309,10 +328,22 @@ def build_app(token: str, analyst: AnalystTools, worker: WorkerTools, host: str 
             since = 0.0
         return JSONResponse({"events": activity.since(since)})
 
+    async def requests_by_id(request):
+        """Chamber requests by id (?ids=1,2): the chat follows the ones its crew made."""
+        try:
+            ids = [int(i) for i in request.query_params.get("ids", "").split(",") if i.strip()]
+        except ValueError:
+            return JSONResponse({"error": "ids: comma-separated request ids"}, status_code=400)
+        requests_service.expire_stale()
+        return JSONResponse(
+            {"requests": [public_request(r) for r in requests_service.get_requests(ids)]}
+        )
+
     starlette = Starlette(
         routes=[
             Route("/health", health),
             Route("/activity", recent_activity),
+            Route("/requests", requests_by_id),
             Mount("/analyst", app=analyst_app),
             Mount("/worker", app=worker_app),
         ],

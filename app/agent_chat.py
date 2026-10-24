@@ -17,7 +17,11 @@ While the crew works the panel shows its progress:
 When the answer is complete the steps stay above it as a short summary.
 
 Chamber actions the crew asks for still need approving in Agent Requests:
-the chat only talks.
+the chat only talks. It follows the requests its crew made (the activity
+feed names them) through GET /requests: when one is decided, sent, or its
+job ends, a notice appears here and, unless the crew already saw that state
+through its own tools, the chat sends the crew an update in the same session
+(UPDATE_PREFIX), so the Professor can tell the user what came of it.
 """
 
 import json
@@ -39,11 +43,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.api.activity import request_state
 from app.common import _svg_icon
 from app.services import settings_service
 
 REPLY_TIMEOUT_MS = 5 * 60 * 1000  # the crew can take a while: the Professor waits for both agents
 ACTIVITY_POLL_MS = 1000
+REQUEST_POLL_MS = 3000
+UPDATE_PREFIX = "[Update from DeepVac Insight, not typed by the user]"
+CLOSED = ("rejected", "failed", "expired")  # request statuses after which nothing happens
 MARGIN = 26  # from the window corner (clear of the size grip)
 PANEL_SIZE = QSize(400, 560)
 
@@ -78,6 +86,12 @@ class AgentChatPanel(QFrame):
         self._working = False
         self._tick_timer = QTimer(self)
         self._tick_timer.timeout.connect(self._tick)
+        self._wrap_up = False  # the turn ended: one last look at the activity, then updates
+        self._final_activity = None
+        self._requests = {}  # request id -> {"request", "seen", "told"}
+        self._requests_reply = None
+        self._requests_timer = QTimer(self)
+        self._requests_timer.timeout.connect(self._poll_requests)
         self._build_ui()
         self._add_message(
             "agent",
@@ -154,6 +168,8 @@ class AgentChatPanel(QFrame):
         if self._reply is not None:
             self._reply.abort()
         self._session_id = str(uuid.uuid4())
+        self._requests = {}  # the new conversation's crew doesn't know them
+        self._requests_timer.stop()
         while self._messages.count() > 1:  # keep the stretch
             item = self._messages.takeAt(1)
             if item.widget():
@@ -166,6 +182,9 @@ class AgentChatPanel(QFrame):
             return
         self.input.clear()
         self._add_message("user", text)
+        self._post(text)
+
+    def _post(self, text):
         url = settings_service.load_agent_chat_url()
         request = QNetworkRequest(QUrl(url))
         request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
@@ -306,8 +325,9 @@ class AgentChatPanel(QFrame):
             self._tick_timer.start(ACTIVITY_POLL_MS)
             return
         self._tick_timer.stop()
-        if self._activity_reply is not None:
-            self._activity_reply.abort()
+        self._wrap_up = True
+        if self._activity_reply is None:
+            self._poll_activity()  # its answer (or none) leads to _maybe_send_update
         if self._progress_label is None:
             return
         if self._progress:
@@ -336,20 +356,31 @@ class AgentChatPanel(QFrame):
             lines.append(f"{MARKS.get(entry['status'], '·')} {entry['text']}")
         self._progress_label.setText("\n".join(lines))
 
-    def _poll_activity(self):
-        if self._api_source is None or self._activity_reply is not None:
-            return
+    def _api_get(self, path):
+        """GET on the agent API, or None when there is none."""
+        if self._api_source is None:
+            return None
         try:
             source = self._api_source()
         except Exception:
             source = None
         if not source:
-            return
+            return None
         base, token = source
-        request = QNetworkRequest(QUrl(f"{base}/activity?since={self._activity_since:.3f}"))
+        request = QNetworkRequest(QUrl(f"{base}{path}"))
         request.setRawHeader(b"Authorization", f"Bearer {token}".encode())
         request.setTransferTimeout(3000)
-        self._activity_reply = self._network.get(request)
+        return self._network.get(request)
+
+    def _poll_activity(self):
+        if self._activity_reply is not None:
+            return
+        self._activity_reply = self._api_get(f"/activity?since={self._activity_since:.3f}")
+        if self._activity_reply is None:
+            self._finish_wrap_up()
+            return
+        if self._wrap_up:
+            self._final_activity = self._activity_reply
         self._activity_reply.finished.connect(self._on_activity)
 
     def _on_activity(self):
@@ -358,13 +389,25 @@ class AgentChatPanel(QFrame):
         if reply is None:
             return
         reply.deleteLater()
-        if reply.error() != QNetworkReply.NoError:
-            return  # no agent API here: the progress shows the agents only
-        try:
-            events = json.loads(bytes(reply.readAll()).decode("utf-8")).get("events", [])
-        except ValueError:
-            return
-        self.show_activity(events)
+        events = None
+        if reply.error() == QNetworkReply.NoError:  # else no agent API: the agents only
+            try:
+                events = json.loads(bytes(reply.readAll()).decode("utf-8")).get("events", [])
+            except ValueError:
+                events = None
+        if events:
+            self.show_activity(events)
+        if self._wrap_up:
+            if reply is self._final_activity:
+                self._finish_wrap_up()
+            else:
+                self._poll_activity()  # asked before the turn ended: look once more
+
+    def _finish_wrap_up(self):
+        if self._wrap_up:
+            self._wrap_up = False
+            self._final_activity = None
+            self._maybe_send_update()
 
     def show_activity(self, events):
         """Agent API activity events (app/api/activity.py) as progress lines (separate for tests)."""
@@ -374,16 +417,101 @@ class AgentChatPanel(QFrame):
                 "text": f"{event.get('agent', '')}: {event.get('text', '')}",
                 "status": event.get("status", "running"),
             }
+            if event.get("request") is not None and event.get("status") == "done":
+                self._track(event["request"], event.get("request_state"))
         self._render_progress()
+
+    # ── the crew's chamber requests ──────────────────────────────────────────
+
+    def _track(self, request_id, told):
+        """A request the crew made or checked; told: the state its tool reported."""
+        entry = self._requests.setdefault(
+            int(request_id), {"request": None, "seen": None, "told": None}
+        )
+        entry["told"] = _same_news(told)
+        entry["seen"] = entry["seen"] or entry["told"]
+        if not self._requests_timer.isActive():
+            self._requests_timer.start(REQUEST_POLL_MS)
+
+    def _open_ids(self):
+        return [
+            rid
+            for rid, entry in self._requests.items()
+            if entry["request"] is None or _is_open(entry["request"])
+        ]
+
+    def _poll_requests(self):
+        ids = self._open_ids()
+        if not ids:
+            self._requests_timer.stop()
+            return
+        if self._requests_reply is not None:
+            return
+        self._requests_reply = self._api_get("/requests?ids=" + ",".join(map(str, ids)))
+        if self._requests_reply is not None:
+            self._requests_reply.finished.connect(self._on_requests)
+
+    def _on_requests(self):
+        reply = self._requests_reply
+        self._requests_reply = None
+        if reply is None:
+            return
+        reply.deleteLater()
+        if reply.error() != QNetworkReply.NoError:
+            return
+        try:
+            requests = json.loads(bytes(reply.readAll()).decode("utf-8")).get("requests", [])
+        except ValueError:
+            return
+        self.show_requests(requests)
+
+    def show_requests(self, requests):
+        """Current state of followed requests (GET /requests): notices for what changed, then an
+        update to the crew if it doesn't know yet (separate for tests)."""
+        for request in requests:
+            entry = self._requests.get(int(request["id"]))
+            if entry is None:
+                continue
+            entry["request"] = request
+            state = _same_news(request_state(request))
+            if state != entry["seen"]:
+                entry["seen"] = state
+                news = describe_request(request)
+                if news:
+                    self._add_message("notice", "Insight · " + news)
+        if not self._open_ids():
+            self._requests_timer.stop()
+        self._maybe_send_update()
+
+    def _maybe_send_update(self):
+        """Tells the crew, as a message in this conversation, what it doesn't know yet."""
+        if self._working or self._reply is not None or self._wrap_up:
+            return  # after the turn
+        news = []
+        for entry in self._requests.values():
+            request = entry["request"]
+            if request is None or entry["seen"] == entry["told"]:
+                continue
+            text = describe_request(request)
+            if text:
+                news.append(text)
+                entry["told"] = entry["seen"]
+        if news:
+            lines = [UPDATE_PREFIX, *[f"- {text}" for text in news]]
+            lines.append("Tell the user briefly what this means for what they asked.")
+            self._post("\n".join(lines))
 
     # ── messages ─────────────────────────────────────────────────────────────
 
     def _add_message(self, role, text):
         bubble = QLabel(text)
         bubble.setObjectName(
-            {"user": "chatUserMsg", "agent": "chatAgentMsg", "steps": "chatStepsMsg"}.get(
-                role, "chatErrorMsg"
-            )
+            {
+                "user": "chatUserMsg",
+                "agent": "chatAgentMsg",
+                "steps": "chatStepsMsg",
+                "notice": "chatNoticeMsg",
+            }.get(role, "chatErrorMsg")
         )
         bubble.setWordWrap(True)
         bubble.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
@@ -410,7 +538,12 @@ class AgentChatPanel(QFrame):
 
     def messages(self):
         """(role, text) of the conversation shown, oldest first (for tests)."""
-        roles = {"chatUserMsg": "user", "chatAgentMsg": "agent", "chatStepsMsg": "steps"}
+        roles = {
+            "chatUserMsg": "user",
+            "chatAgentMsg": "agent",
+            "chatStepsMsg": "steps",
+            "chatNoticeMsg": "notice",
+        }
         result = []
         for i in range(1, self._messages.count()):
             holder = self._messages.itemAt(i).widget()
@@ -418,6 +551,46 @@ class AgentChatPanel(QFrame):
             if label:
                 result.append((roles.get(label.objectName(), "error"), label.text()))
         return result
+
+
+def _same_news(state):
+    """A job that is starting and one that is running are the same news for the crew."""
+    return state.replace("/starting", "/running") if state else state
+
+
+def _is_open(request):
+    """Can anything still happen to this request?"""
+    if request.get("status") in CLOSED:
+        return False
+    if request.get("status") == "executed":
+        return request.get("job_state") in ("starting", "running")
+    return True
+
+
+def describe_request(request):
+    """What became of a request, in a sentence (None while nothing worth telling happened)."""
+    status, job = request.get("status"), request.get("job_state")
+    head = f"Request {request['id']} ({request.get('summary', '')})"
+    by = request.get("decided_by") or "the operator"
+    if status == "rejected":
+        comment = request.get("decision_comment")
+        return f"{head}: rejected by {by}" + (f" ({comment})." if comment else ".")
+    if status == "failed":
+        return f"{head}: approved, but sending it to the chamber failed: {request.get('result')}."
+    if status == "expired":
+        return f"{head}: expired; nobody decided on it within 30 minutes."
+    if status != "executed" or job == "starting":
+        return None
+    texts = {
+        None: f"approved by {by} and sent to the chamber.",
+        "running": f"approved by {by}; the job is running on the chamber.",
+        "finished": "the job finished.",
+        "stopped": "the job was stopped before it finished.",
+        "alarm": "the job ended in an alarm.",
+        "replaced": "another job replaced it on the chamber.",
+        "unknown": "sent to the chamber, but the PLC never reported the job running.",
+    }
+    return f"{head}: {texts.get(job, job)}"
 
 
 class AgentChat(QObject):

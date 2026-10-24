@@ -185,3 +185,52 @@ def test_activity_feed_adds_what_each_agent_does(chat):
     assert "… Worker: reading the chamber's live status" in steps
     panel._set_working(False)
     assert "… " not in panel.messages()[-1][1]  # all marked done in the summary
+
+
+def test_tells_the_crew_what_became_of_its_requests(chat, qtbot, crew_webhook, monkeypatch):
+    from app.agent_chat import UPDATE_PREFIX
+
+    url, received = crew_webhook
+    monkeypatch.setattr(settings_service, "load_agent_chat_url", lambda: url)
+    panel = chat.panel
+    # the worker filed request 7 and saw it pending; it saw request 8 already sent
+    panel.show_activity(
+        [
+            {"id": 1, "agent": "Worker", "text": "requesting 30 °C", "status": "done"}
+            | {"request": 7, "request_state": "pending"},
+            {"id": 2, "agent": "Worker", "text": "waiting", "status": "done"}
+            | {"request": 8, "request_state": "executed/starting"},
+        ]
+    )
+    request = {
+        "id": 7,
+        "kind": "setpoint",
+        "status": "executed",
+        "summary": "Set PLC to 30 °C, hold 10 min",
+        "decided_by": "Ana",
+        "job_state": "running",
+    }
+    known = {**request, "id": 8, "summary": "Set PLC to 25 °C"}
+    panel.show_requests([request, known])
+    qtbot.waitUntil(lambda: len(received) == 1, timeout=5000)
+    update = received[0]["chatInput"]
+    assert update.startswith(UPDATE_PREFIX)
+    assert (
+        "Request 7 (Set PLC to 30 °C, hold 10 min): approved by Ana; the job is running" in update
+    )
+    assert "Request 8" not in update  # the crew already knows
+    qtbot.waitUntil(lambda: panel._reply is None and not panel._wrap_up, timeout=5000)
+
+    panel.show_requests([request, known])  # nothing new: nothing sent
+    # the job ends while the crew answers something else: told once that turn is over
+    panel.input.setText("and now?")
+    panel.send()
+    panel.show_requests([{**request, "job_state": "finished"}, known])
+    qtbot.waitUntil(lambda: len(received) == 3, timeout=5000)
+    assert received[1]["chatInput"] == "and now?"
+    assert (
+        "Request 7 (Set PLC to 30 °C, hold 10 min): the job finished." in received[2]["chatInput"]
+    )
+    qtbot.waitUntil(lambda: panel._reply is None, timeout=5000)
+    notices = [text for role, text in panel.messages() if role == "notice"]
+    assert len(notices) == 2 and notices[1].startswith("Insight · Request 7")

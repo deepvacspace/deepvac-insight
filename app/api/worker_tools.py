@@ -4,6 +4,8 @@ Reading (live status, PLC settings, programs) goes straight to the PLC.
 Every action -- a setpoint, a program, a stop -- only creates a request in
 agent_requests_service; it reaches the chamber after a person approves it in
 the app (see executor.py). Limits are checked here before a request exists.
+wait_for_request lets the worker wait, within its turn, for the operator's
+decision; what happens later reaches the crew through the app's chat.
 """
 
 import time
@@ -17,6 +19,15 @@ from app.services import plc_gate, plc_programs, test_profiles_service
 STALE_AFTER_S = 15.0  # live values older than this are reported as stale
 MAX_RAMP_C_PER_MIN = 20.0
 MAX_HOLD_MIN = 7 * 24 * 60
+WAIT_DEFAULT_S = 120
+WAIT_MAX_S = 180  # below the n8n chamber node's tool timeout (200 s)
+WAIT_POLL_S = 1.0
+DECIDED = (
+    requests_service.EXECUTED,
+    requests_service.FAILED,
+    requests_service.REJECTED,
+    requests_service.EXPIRED,
+)
 
 
 class WorkerTools:
@@ -200,7 +211,33 @@ class WorkerTools:
         request = requests_service.get_request(request_id)
         if request is None:
             raise ChamberError(f"No request {request_id}.")
-        return self._public(request)
+        return public_request(request)
+
+    def wait_for_request(self, request_id: int, timeout_s: float = WAIT_DEFAULT_S) -> dict:
+        """Waits until the request is decided and sent (or rejected, failed, expired)."""
+        timeout_s = max(1.0, min(float(timeout_s), WAIT_MAX_S))
+        started = time.monotonic()
+        while True:
+            requests_service.expire_stale()
+            request = requests_service.get_request(request_id)
+            if request is None:
+                raise ChamberError(f"No request {request_id}.")
+            waited = time.monotonic() - started
+            if request["status"] in DECIDED or waited >= timeout_s:
+                break
+            time.sleep(WAIT_POLL_S)
+        public = public_request(request)
+        public["waited_s"] = round(waited)
+        if request["status"] not in DECIDED:
+            public["next"] = (
+                "The operator hasn't decided yet. Don't wait or poll again: DeepVac Insight tells "
+                "the chat when the request is decided and when its job ends."
+            )
+        elif request.get("job_state") in requests_service.JOB_OPEN:
+            public["next"] = (
+                "Sent to the chamber; the job is under way. Insight tells the chat when it ends."
+            )
+        return public
 
     def list_requests(self, status: str = "", limit: int = 10) -> dict:
         requests_service.expire_stale()
@@ -208,7 +245,7 @@ class WorkerTools:
             raise ChamberError(f"status must be one of {', '.join(requests_service.STATUSES)}")
         return {
             "requests": [
-                self._public(r)
+                public_request(r)
                 for r in requests_service.list_requests(status or None, min(int(limit), 50))
             ]
         }
@@ -217,30 +254,35 @@ class WorkerTools:
         request = requests_service.create_request(
             kind, chamber, params, summary, reason, self.requested_by
         )
-        public = self._public(request)
+        public = public_request(request)
         public["next"] = (
             "Nothing has been sent to the chamber. An operator must approve this request in DeepVac "
-            "Insight (Agent Requests); check it with get_request."
+            "Insight (Agent Requests); wait for the decision with wait_for_request."
         )
         return public
 
-    @staticmethod
-    def _public(r: dict) -> dict:
-        return {
-            key: r[key]
-            for key in (
-                "id",
-                "status",
-                "summary",
-                "reason",
-                "created_at",
-                "decided_by",
-                "decision_comment",
-                "executed_at",
-                "result",
-            )
-            if r.get(key) not in (None, "")
-        }
+
+def public_request(r: dict) -> dict:
+    """What agents (and the chat) see of a request."""
+    return {
+        key: r[key]
+        for key in (
+            "id",
+            "kind",
+            "status",
+            "summary",
+            "reason",
+            "created_at",
+            "decided_by",
+            "decision_comment",
+            "executed_at",
+            "result",
+            "job_state",
+            "job_started_at",
+            "job_ended_at",
+        )
+        if r.get(key) not in (None, "")
+    }
 
 
 def execute_request(links: ChamberLinks, request: dict) -> str:

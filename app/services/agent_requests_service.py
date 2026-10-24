@@ -13,6 +13,12 @@ read a request's status but have no way to approve one.
 
 claim() is atomic, so a request is sent at most once even when two API
 processes run executors on the same database.
+
+An executed setpoint or program starts a job on the PLC; the executor then
+follows that job (job_state) until it ends, so the chat can tell the crew:
+
+    starting --> running --> finished | stopped | alarm | replaced
+             --> unknown (the PLC never reported it running)
 """
 
 import json
@@ -33,6 +39,15 @@ EXPIRED = "expired"
 STATUSES = (PENDING, APPROVED, REJECTED, EXECUTING, EXECUTED, FAILED, EXPIRED)
 
 KINDS = ("setpoint", "program", "stop")
+
+JOB_STARTING = "starting"
+JOB_RUNNING = "running"
+JOB_FINISHED = "finished"
+JOB_STOPPED = "stopped"
+JOB_ALARM = "alarm"
+JOB_REPLACED = "replaced"
+JOB_UNKNOWN = "unknown"
+JOB_OPEN = (JOB_STARTING, JOB_RUNNING)
 
 # a request nobody decided on is not executed hours later, when the chamber may be doing something else
 PENDING_TIMEOUT = timedelta(minutes=30)
@@ -72,6 +87,10 @@ def connect_agent_requests(db_path=None):
         )
         """
     )
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(agent_requests)")}
+    for column in ("job_state", "job_started_at", "job_ended_at"):
+        if column not in columns:  # databases from before jobs were followed
+            conn.execute(f"ALTER TABLE agent_requests ADD COLUMN {column} TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_requests_status ON agent_requests(status, id)"
     )
@@ -100,6 +119,9 @@ def _row(row):
         "decision_comment": row["decision_comment"],
         "executed_at": row["executed_at"],
         "result": row["result"],
+        "job_state": row["job_state"],
+        "job_started_at": row["job_started_at"],
+        "job_ended_at": row["job_ended_at"],
     }
 
 
@@ -226,16 +248,78 @@ def claim(request_id):
         conn.close()
 
 
-def mark_done(request_id, ok, result):
+def get_requests(request_ids):
+    """The requests with these ids that exist, by id."""
+    ids = [int(i) for i in request_ids][:100]
+    if not ids:
+        return []
+    conn = connect_agent_requests()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM agent_requests WHERE id IN ({','.join('?' * len(ids))}) ORDER BY id",
+            ids,
+        ).fetchall()
+        return [_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_done(request_id, ok, result, job_state=None):
+    """job_state: JOB_STARTING when an executed request started a job on the PLC."""
     conn = connect_agent_requests()
     try:
         conn.execute(
-            "UPDATE agent_requests SET status = ?, executed_at = ?, result = ? WHERE id = ? AND status = ?",
-            (EXECUTED if ok else FAILED, _now(), str(result), int(request_id), EXECUTING),
+            "UPDATE agent_requests SET status = ?, executed_at = ?, result = ?, job_state = ? "
+            "WHERE id = ? AND status = ?",
+            (
+                EXECUTED if ok else FAILED,
+                _now(),
+                str(result),
+                job_state if ok else None,
+                int(request_id),
+                EXECUTING,
+            ),
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def open_jobs():
+    """Executed requests whose job hasn't ended, oldest first, for the executor to follow."""
+    conn = connect_agent_requests()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM agent_requests WHERE status = ? AND job_state IN "
+            f"({','.join('?' * len(JOB_OPEN))}) ORDER BY id",
+            (EXECUTED, *JOB_OPEN),
+        ).fetchall()
+        return [_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_job_state(request_id, job_state, started_at=None, ended_at=None):
+    """started_at / ended_at: epoch seconds, or None to keep the stored value."""
+
+    def iso(epoch):
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch else None
+
+    conn = connect_agent_requests()
+    try:
+        conn.execute(
+            "UPDATE agent_requests SET job_state = ?, job_started_at = COALESCE(?, job_started_at), "
+            "job_ended_at = COALESCE(?, job_ended_at) WHERE id = ?",
+            (job_state, iso(started_at), iso(ended_at), int(request_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def epoch(iso_text):
+    """Epoch seconds of a timestamp stored here (None stays None)."""
+    return datetime.fromisoformat(iso_text).timestamp() if iso_text else None
 
 
 def expire_stale(now=None):
