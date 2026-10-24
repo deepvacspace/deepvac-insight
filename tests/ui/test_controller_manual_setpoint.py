@@ -21,7 +21,7 @@ def window(deepvac_ui, fake_user, qtbot):
     win = DeepVacDesktop(current_user=fake_user)
     qtbot.addWidget(win)
     win.restore_window_state()
-    win._nav_to(6)
+    win._nav_to(5)
     return win
 
 

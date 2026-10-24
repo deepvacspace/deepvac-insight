@@ -278,7 +278,7 @@ class DashboardMixin:
         for label, icon_name, slot in [
             (self.tr("Compare Runs"), "layout-split", lambda: self._nav_to(1)),
             (self.tr("Export Data"), "download", self._dash_export_csv),
-            (self.tr("View Reports"), "file-earmark", lambda: self._nav_to(4)),
+            (self.tr("View Reports"), "file-earmark", lambda: self._nav_to(1)),
         ]:
             btn = QPushButton(f"  {label}")
             btn.setIcon(_svg_icon(icon_name, "#94a3b8", 15))
@@ -299,7 +299,7 @@ class DashboardMixin:
         missing_row.addWidget(missing_desc, 1)
         missing_lay.addLayout(missing_row)
         missing_open_btn = QPushButton(self.tr("Open"))
-        missing_open_btn.clicked.connect(lambda: self._nav_to(4))
+        missing_open_btn.clicked.connect(lambda: self._nav_to(1))  # reports: Runs list
         missing_lay.addWidget(missing_open_btn)
         right_col.addWidget(missing_card)
 
@@ -827,7 +827,7 @@ class DashboardMixin:
                     self.tr("Missing Reports"),
                     self.tr("{0} run(s) are missing performance reports.").format(len(missing)),
                     self.tr("Investigate"),
-                    lambda: self._nav_to(4),
+                    lambda: self._nav_to(1),
                 )
             )
         self._dash_missing_count_lbl.setText(str(len(missing)))

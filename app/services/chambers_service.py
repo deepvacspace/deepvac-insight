@@ -2,7 +2,7 @@
 its own local SQLite database.
 
 The app can connect to several of these at once (up to
-chamber_session.MAX_CONNECTED_CHAMBERS, see views/monitoring.py and
+chamber_session.MAX_CONNECTED_CHAMBERS, see views/controller.py and
 main_window.py's _connect_chamber) (a run saved via
 "Save Session as Run" is tagged with whichever chamber was connected at the
 time -- see data_service.save_monitoring_session()'s chamber parameter).
@@ -178,14 +178,18 @@ def touch_hub_synced(chamber_id):
         conn.close()
 
 
-def update_chamber(chamber_id, name, host, port):
+def update_chamber(chamber_id, name, host, port, protocol=None):
+    """protocol None keeps the chamber's current one (hub sync doesn't carry it)."""
     _validate(name, host, port)
+    if protocol is not None and protocol not in PROTOCOLS:
+        raise ChamberError(f"Protocol must be one of {', '.join(PROTOCOLS)}.")
     conn = connect_chambers()
     try:
         try:
             conn.execute(
-                "UPDATE chambers SET name = ?, host = ?, port = ? WHERE id = ?",
-                (name.strip(), host.strip(), int(port), chamber_id),
+                "UPDATE chambers SET name = ?, host = ?, port = ?, protocol = COALESCE(?, protocol) "
+                "WHERE id = ?",
+                (name.strip(), host.strip(), int(port), protocol, chamber_id),
             )
         except sqlite3.IntegrityError as exc:
             raise ChamberError(f"A chamber named '{name}' already exists.") from exc

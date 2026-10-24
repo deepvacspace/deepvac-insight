@@ -27,13 +27,13 @@ def window(deepvac_ui, fake_user, qtbot):
     return win
 
 
-@pytest.mark.parametrize("index", range(8))
+@pytest.mark.parametrize("index", range(7))
 def test_navigate_to_each_page_does_not_raise(window, index):
     window._nav_to(index)
     assert window.content_stack.currentIndex() == index
 
 
-@pytest.mark.parametrize("index", range(8))
+@pytest.mark.parametrize("index", range(7))
 def test_revisiting_a_page_does_not_grow_signal_connections(window, index):
     # QObject.receivers() wants the classic Qt SIGNAL() string form (a
     # leading '2' + the C++ method signature from QMetaMethod), not the
@@ -53,7 +53,7 @@ def test_no_real_chamber_connection_attempted_while_navigating(window):
     # Live Monitoring's connections are only ever opened by an explicit
     # Connect click (app/views/monitoring.py's _on_mon_connect_new), never
     # by navigation or construction -- confirmed here rather than assumed.
-    for index in range(8):
+    for index in range(7):
         window._nav_to(index)
     assert window._chamber_sessions == {}
     assert window.opc_server.is_running() is False
@@ -85,17 +85,12 @@ def test_reports_page_widgets_created(window):
     assert window._report_status_filter is not None
 
 
-def test_monitor_page_navigable(window):
-    window._nav_to(5)
-    assert window.content_stack.currentIndex() == 5
-
-
 def test_controller_page_widgets_created(window):
-    window._nav_to(6)
+    window._nav_to(5)
     assert window._test_profile_combo is not None
     assert window._test_start_btn is not None
 
 
 def test_opc_page_navigable(window):
-    window._nav_to(7)
-    assert window.content_stack.currentIndex() == 7
+    window._nav_to(6)
+    assert window.content_stack.currentIndex() == 6

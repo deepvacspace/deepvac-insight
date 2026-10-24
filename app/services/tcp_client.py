@@ -6,7 +6,7 @@ run_samples.csv row (temp, temp_ref, kp, ki, kd, temp_u, temp_u_p,
 temp_u_i, temp_u_d, ...).
 
 Outbound wire protocol (send_command(), used by Test Profiles --
-views/monitoring.py's step-sequencer): also newline-delimited JSON, one
+chamber_session.ChamberSession.s step-sequencer): also newline-delimited JSON, one
 object per command, e.g. {"cmd": "set_point", "temperature": 60.0,
 "pressure": null, "step_index": 0, "step_label": "Ramp to 60C",
 "profile_name": "Soak Test A"}.

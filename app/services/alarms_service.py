@@ -1,4 +1,4 @@
-"""Persistent alarm rules and alarm history for Live Monitoring, in their
+"""Persistent alarm rules and alarm history for connected chambers, in their
 own local SQLite database -- rules and past events both survive restarts
 (unlike the in-memory-only alarm list this replaces).
 

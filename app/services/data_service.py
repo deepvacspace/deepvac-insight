@@ -489,7 +489,7 @@ def upload_runs(paths, progress=None):
 
 
 def save_monitoring_session(name, samples, chamber=None, test_profile=None):
-    """Saves a buffered Live Monitoring session (a list[dict] of samples,
+    """Saves a buffered chamber session (a list[dict] of samples,
     the same shape as one incoming TCP JSON line each -- see
     tcp_client.ChamberConnection) directly into the run cache as a normal
     run, with its own source='monitoring' tag (never pruned by sync_cache(),

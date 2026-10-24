@@ -1,15 +1,19 @@
 """Live tab of the Analysis page (LiveTabPage): follows the experiment running
-on a PLC chamber now, like control2-client's live chart tab.
+on a chamber now, like control2-client's live chart tab.
 
 Shows the job since it started (or the last minutes when the chamber is
 idle), its stages shaded on the chart, the chamber's state, and KPIs and
-anomalies recomputed every few seconds with the Analysis Core. When a job
-ends it can be saved as a run, so experiments started from anywhere --
-including by the agents -- land in the run database.
+anomalies recomputed every few seconds with the Analysis Core, and saves it
+as a run so experiments started from anywhere -- including by the agents --
+land in the run database.
 
-Data comes from the PLC gate (protocol "plc" chambers) through the app's
-shared ChamberLinks; chambers with protocol "json" are followed in Live
-Monitoring instead.
+Two kinds of chamber:
+- protocol "plc": the PLC itself over the PLC gate, through the app's shared
+  ChamberLinks; jobs are seen starting and ending, and a finished job is
+  saved by itself;
+- protocol "json": sample feeds connected from the Controller page
+  (ChamberSession); the whole recording since connecting (or the last save)
+  is shown, and Save as Run saves it and starts a new recording.
 """
 
 import math
@@ -70,13 +74,16 @@ class _AnalysisWorker(QThread):
 class LiveTabPage(QWidget):
     run_saved = Signal(str)  # key of a run saved from the live data
 
-    def __init__(self, links, dark=True, parent=None):
+    def __init__(self, links, dark=True, sessions=None, parent=None):
+        """sessions: callable returning the connected sample-feed chambers
+        ({chamber id: ChamberSession}); none when omitted."""
         super().__init__(parent)
         self.run_key = LIVE_KEY  # the tab system and UI-state persistence key pages by this
         self.compare_runs = set()  # Analysis' run list asks every page for its comparison
         self.links = links
+        self._sessions = sessions or dict
         self.dark = dark
-        self._chamber = None
+        self._source = None
         self._analysis = None
         self._analysis_start = None
         self._worker = None
@@ -225,67 +232,67 @@ class LiveTabPage(QWidget):
 
     # ── chambers ─────────────────────────────────────────────────────────────
 
+    def _sources(self):
+        sources = [
+            _PlcSource(self.links, c) for c in self.links.chambers() if c["protocol"] == "plc"
+        ]
+        sources += [_JsonSource(session) for session in self._sessions().values()]
+        return sources
+
     def reload_chambers(self):
-        current = self._chamber["id"] if self._chamber else None
-        plcs = [c for c in self.links.chambers() if c["protocol"] == "plc"]
+        current = self._source.key if self._source else None
+        sources = self._sources()
         self.chamber_combo.blockSignals(True)
         self.chamber_combo.clear()
-        for chamber in plcs:
-            self.chamber_combo.addItem(
-                f"{chamber['name']} ({chamber['host']}:{chamber['port']})", chamber
-            )
-        index = next((i for i, c in enumerate(plcs) if c["id"] == current), 0)
-        if plcs:
+        for source in sources:
+            self.chamber_combo.addItem(source.label, source)
+        index = next((i for i, src in enumerate(sources) if src.key == current), 0)
+        if sources:
             self.chamber_combo.setCurrentIndex(index)
         self.chamber_combo.blockSignals(False)
         self._on_chamber_changed()
 
     def _on_chamber_changed(self, *_):
-        self._chamber = self.chamber_combo.currentData()
-        self._analysis = None
-        if self._chamber:
-            self.links.client(self._chamber, wait=False)  # starts connecting in the background
+        source = self.chamber_combo.currentData()
+        if source is None or self._source is None or source.key != self._source.key:
+            self._analysis = None
+        self._source = source
+        if source is not None:
+            source.start()
         self._refresh()
-
-    def _client(self):
-        return self.links.client(self._chamber, wait=False) if self._chamber else None
 
     # ── live data ────────────────────────────────────────────────────────────
 
-    def _job_samples(self, client, snap):
-        """The current or last job's samples; the last minutes when no job was seen."""
-        if snap.job_started_at:
-            samples = client.history(since=snap.job_started_at - 0.001)
-            if snap.job_ended_at:
-                samples = [s for s in samples if s["timestamp"] <= snap.job_ended_at]
-            if samples:
-                return samples, True
-        return client.history(since=time.time() - IDLE_WINDOW_S), False
-
     def _refresh(self, *_):
-        client = self._client()
-        if client is None:
+        source = self._source
+        if source is None:
             self._show_idle(
-                self.tr('No PLC chamber. Add one with protocol "plc" (see the README, Agent API).')
+                self.tr(
+                    "No chamber to follow. Connect one on the Controller page, or add a chamber "
+                    'PLC (Controller → Chamber Settings…, connection "Chamber PLC").'
+                )
             )
             return
-        snap = client.snapshot()
-        if not snap.connected or not snap.values:
-            reason = f": {snap.last_error}" if snap.last_error else "…"
-            self._show_idle(self.tr("Connecting to {0}{1}").format(snap.address, reason))
+        state = source.state()
+        if not state["connected"]:
+            self._show_idle(self.tr("Connecting to {0}{1}").format(source.address, state["note"]))
             return
-        samples, is_job = self._job_samples(client, snap)
-        self._update_now(snap)
-        self._maybe_autosave(client, snap)
-        working = snap.status == "work"
-        if is_job:
-            label = self.tr("Job running") if working else self.tr("Last job")
+        samples, is_job = source.samples()
+        self._update_now(state)
+        self._maybe_autosave(source)
+        if source.kind == "json":
+            label = self.tr("Recording {0} sample(s)").format(len(samples))
+        elif is_job:
+            label = self.tr("Job running") if state["working"] else self.tr("Last job")
         else:
             label = self.tr("No job running: last {0} min").format(IDLE_WINDOW_S // 60)
-        self.status_label.setText(f"{snap.status.upper()} · {label}")
+        self.status_label.setText(f"{state['status'].upper()} · {label}")
         self.idle_label.setText("")
         self.save_btn.setEnabled(is_job and len(samples) > 2)
-        self._draw(samples)
+        if samples:
+            self._draw(samples)
+        else:
+            self.chart.draw({"columns": [], "points": []})
 
     def _show_idle(self, text):
         self.status_label.setText("")
@@ -321,43 +328,27 @@ class LiveTabPage(QWidget):
                 STAGE_COLORS.get(s.kind, "#64748b"),
             )
 
-    def _update_now(self, snap):
-        v = snap.values
-        output = v.get("temp_u")
+    def _update_now(self, state):
+        v = state["values"]
+        output = _number(v.get("temp_u"))
         mode = ""
         if output is not None:
             mode = (
                 self.tr(" heating") if output > 1 else (self.tr(" cooling") if output < -1 else "")
             )
-        program = "—"
-        if v.get("interval"):
-            program = self.tr("interval {0}/{1}").format(
-                int(v["interval"]), int(v.get("intervals_count", 0))
-            )
-            if v.get("cycle_total"):
-                program += self.tr(", cycle {0}/{1}").format(
-                    int(v.get("cycle_cur", 0)), int(v["cycle_total"])
-                )
-        elapsed = "—"
-        if snap.status == "work" and snap.job_started_at:
-            elapsed = _duration(time.time() - snap.job_started_at)
+        elapsed = _duration(time.time() - state["since"]) if state["since"] else "—"
         values = {
-            "status": snap.status,
-            "temp": f"{fmt(v.get('temp'), 2)} °C",
-            "setpoint": f"{fmt(v.get('temp_ref'), 2)} °C",
+            "status": state["status"] + (f" · {state['alarm']}" if state["alarm"] else ""),
+            "temp": f"{fmt(_number(v.get('temp')), 2)} °C",
+            "setpoint": f"{fmt(_number(v.get('temp_ref')), 2)} °C",
             "output": f"{fmt(output, 1)} %{mode}",
-            "program": program,
+            "program": state["program"] or "—",
             "elapsed": elapsed,
         }
         for key, text in values.items():
             self.now_values[key].setText(text)
-        if snap.alarm_code:
-            self.now_values["status"].setText(f"{snap.status} · alarm {snap.alarm_code}")
-        error = (
-            None
-            if v.get("temp") is None or v.get("temp_ref") is None
-            else v["temp_ref"] - v["temp"]
-        )
+        temp, ref = _number(v.get("temp")), _number(v.get("temp_ref"))
+        error = None if temp is None or ref is None else ref - temp
         self.kpi_values["error"].setText(f"{fmt(error, 2)} °C" if error is not None else "—")
 
     # ── analysis (background) ────────────────────────────────────────────────
@@ -365,20 +356,17 @@ class LiveTabPage(QWidget):
     def _start_analysis(self):
         if self._worker is not None and self._worker.isRunning():
             return
-        client = self._client()
-        if client is None:
+        source = self._source
+        if source is None or not source.state()["connected"]:
             return
-        snap = client.snapshot()
-        if not snap.connected:
-            return
-        samples, is_job = self._job_samples(client, snap)
+        samples, is_job = source.samples()
         if not is_job or len(samples) < 3:
             self._analysis = None
             for key in ("stage", "stage_time", "mae", "overshoot", "settling"):
                 self.kpi_values[key].setText("—")
             self.anomaly_label.setText(self.tr("Shown while a job runs."))
             return
-        self._worker = _AnalysisWorker(samples)
+        self._worker = _AnalysisWorker(list(samples))
         self._worker.finished_ok.connect(self._on_analysis)
         self._worker.start()
 
@@ -408,41 +396,164 @@ class LiveTabPage(QWidget):
 
     # ── saving ───────────────────────────────────────────────────────────────
 
-    def _maybe_autosave(self, client, snap):
-        if not (self.autosave.isChecked() and snap.job_started_at and snap.job_ended_at):
+    def _maybe_autosave(self, source):
+        if not self.autosave.isChecked():
             return
-        if snap.job_started_at in self._saved_jobs:
+        ended = source.ended_job()
+        if ended is None or ended[0] in self._saved_jobs:
             return
-        self._saved_jobs.add(snap.job_started_at)
-        samples, _ = self._job_samples(client, snap)
-        self._save(samples, quiet=True)
+        self._saved_jobs.add(ended[0])
+        self._save(source, ended[1], quiet=True)
 
     def _save_current(self):
-        client = self._client()
-        if client is None:
+        if self._source is None:
             return
-        samples, is_job = self._job_samples(client, client.snapshot())
+        samples, is_job = self._source.samples()
         if is_job:
-            self._save(samples, quiet=False)
+            self._save(self._source, list(samples), quiet=False)
 
-    def _save(self, samples, quiet):
+    def _save(self, source, samples, quiet):
         if len(samples) < 3:
             return
         started = datetime.fromtimestamp(samples[0]["timestamp"]).strftime("%Y-%m-%d %H:%M")
-        name = f"{started} Live job"
+        if source.kind == "json":
+            name = f"{started} {source.chamber['name']}"
+        else:
+            name = f"{started} Live job"
         try:
             result = data_service.save_monitoring_session(
-                name, samples, chamber=self._chamber["name"]
+                name, samples, chamber=source.chamber["name"], test_profile=source.test_profile()
             )
         except Exception as exc:
             if not quiet:
                 QMessageBox.critical(self, self.tr("Save failed"), str(exc))
             return
+        source.after_save()
+        self._analysis = None
         self.run_saved.emit(result["key"])
         if not quiet:
             QMessageBox.information(
                 self, self.tr("Saved"), self.tr('Saved as run "{0}".').format(name)
             )
+
+
+class _PlcSource:
+    """A chamber PLC (protocol "plc"), read over the PLC gate."""
+
+    kind = "plc"
+
+    def __init__(self, links, chamber):
+        self.links = links
+        self.chamber = chamber
+        self.key = ("plc", chamber["id"])
+        self.address = f"{chamber['host']}:{chamber['port']}"
+        self.label = f"{chamber['name']} ({self.address}, PLC)"
+
+    def _client(self):
+        return self.links.client(self.chamber, wait=False)
+
+    def start(self):
+        self._client()  # starts connecting in the background
+
+    def state(self):
+        snap = self._client().snapshot()
+        v = snap.values
+        program = ""
+        if v.get("interval"):
+            program = f"interval {int(v['interval'])}/{int(v.get('intervals_count', 0))}"
+            if v.get("cycle_total"):
+                program += f", cycle {int(v.get('cycle_cur', 0))}/{int(v['cycle_total'])}"
+        working = snap.status == "work"
+        return {
+            "connected": snap.connected and bool(v),
+            "note": f": {snap.last_error}" if snap.last_error else "…",
+            "status": snap.status,
+            "working": working,
+            "values": v,
+            "program": program,
+            "since": snap.job_started_at if working else None,
+            "alarm": f"alarm {snap.alarm_code}" if snap.alarm_code else "",
+        }
+
+    def samples(self):
+        """The current or last job's samples; the last minutes when no job was seen."""
+        client = self._client()
+        snap = client.snapshot()
+        if snap.job_started_at:
+            samples = client.history(since=snap.job_started_at - 0.001)
+            if snap.job_ended_at:
+                samples = [s for s in samples if s["timestamp"] <= snap.job_ended_at]
+            if samples:
+                return samples, True
+        return client.history(since=time.time() - IDLE_WINDOW_S), False
+
+    def ended_job(self):
+        snap = self._client().snapshot()
+        if snap.job_started_at and snap.job_ended_at:
+            samples, _ = self.samples()
+            return snap.job_started_at, samples
+        return None
+
+    def test_profile(self):
+        return None
+
+    def after_save(self):
+        pass
+
+
+class _JsonSource:
+    """A sample-feed chamber (protocol "json") connected from the Controller page."""
+
+    kind = "json"
+
+    def __init__(self, session):
+        self.session = session
+        self.chamber = session.chamber
+        self.key = ("json", self.chamber["id"])
+        self.address = f"{self.chamber['host']}:{self.chamber['port']}"
+        self.label = f"{self.chamber['name']} ({self.address})"
+
+    def start(self):
+        pass  # connected and disconnected on the Controller page
+
+    def state(self):
+        s = self.session
+        buffer = s.mon_buffer
+        program = ""
+        if s.test_running_profile is not None:
+            steps = len(s.test_running_profile["steps"])
+            program = f"{s.test_running_profile['name']}, step {s.test_step_index + 1}/{steps}"
+        elif s.manual_running:
+            program = "manual setpoint"
+        working = s.manual_running or s.test_running_profile is not None
+        connected = s.is_connected()
+        return {
+            "connected": connected or bool(buffer),
+            "note": f": {s.connection_note}" if s.connection_note else "…",
+            "status": ("work" if working else "online") if connected else "offline",
+            "working": working,
+            "values": buffer[-1] if buffer else {},
+            "program": program,
+            "since": buffer[0]["timestamp"] if buffer else None,
+            "alarm": "",
+        }
+
+    def samples(self):
+        buffer = self.session.mon_buffer
+        return buffer, bool(buffer)
+
+    def ended_job(self):
+        return None  # a feed has no job boundaries: saved from Save as Run or on disconnect
+
+    def test_profile(self):
+        return self.session.session_test_profile_name
+
+    def after_save(self):
+        self.session.clear_buffer()
+
+
+def _number(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _finite(value):

@@ -23,7 +23,7 @@ def window(deepvac_ui, fake_user, qtbot):
     win = DeepVacDesktop(current_user=fake_user)
     qtbot.addWidget(win)
     win.restore_window_state()
-    win._nav_to(6)
+    win._nav_to(5)
     return win
 
 
@@ -172,10 +172,8 @@ def test_send_command_failure_mid_test_stops_and_reports_error(
 
 
 def test_saving_session_after_running_a_test_tags_the_run_with_its_profile(
-    deepvac_data_dir, window, connected_chamber, monkeypatch
+    deepvac_data_dir, window, connected_chamber
 ):
-    from PySide6.QtWidgets import QInputDialog
-
     sent, session = connected_chamber
     profile = profiles.add_profile(
         "Quick Test",
@@ -185,14 +183,22 @@ def test_saving_session_after_running_a_test_tags_the_run_with_its_profile(
     _select_profile(window, profile["id"])
     window._test_start()
 
-    session.mon_buffer = [{"timestamp": "1700000000", "temp": "20.0"}]
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("live-test", True)))
+    session.mon_buffer = [{"timestamp": 1_700_000_000 + i, "temp": 20.0 + i} for i in range(5)]
 
-    page = window.monitor_editor_area.active_page()
-    page._save_monitoring_session()
+    # the recording is followed and saved in Analysis' Live tab
+    page = window.editor_area.page_for("live")
+    page.reload_chambers()
+    index = next(
+        i
+        for i in range(page.chamber_combo.count())
+        if page.chamber_combo.itemData(i).key == ("json", session.chamber["id"])
+    )
+    page.chamber_combo.setCurrentIndex(index)
+    page._save_current()
 
     from app.services import data_service
 
     runs = data_service.load_cached_runs()
     assert runs[0]["chamber"] == "Chamber 1"
     assert runs[0]["test_profile"] == "Quick Test"
+    assert session.mon_buffer == []  # a new recording starts

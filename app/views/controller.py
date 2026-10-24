@@ -1,7 +1,7 @@
-"""ControllerMixin — builds the Controller page: a one-off Manual Setpoint
-sender and Test Profiles (multi-step temperature/pressure schedules), both
-targeting whichever connected chamber is selected in this page's own
-Chamber combo.
+"""ControllerMixin — builds the Controller page: chamber connections and their
+settings, a one-off Manual Setpoint sender, Test Profiles (multi-step
+temperature/pressure schedules) and the chamber's alarm rules, all for the
+chamber selected in this page's Chamber combo.
 
 Each connected chamber runs its own manual setpoint / test profile
 independently and concurrently -- the step-sequencer and all of that
@@ -13,8 +13,10 @@ read/write view onto whichever session is currently selected.
 
 The chamber connections themselves (self._chamber_sessions) are shared
 app-wide and owned by DeepVacDesktop (_connect_chamber/_disconnect_chamber
-in main_window.py) -- Live Monitoring (views/monitoring.py) is what
-creates/destroys them; this page only looks them up.
+in main_window.py); this page's Connect / Disconnect button drives them.
+Their live data is followed in Analysis' Live tab (app/live_tab.py).
+Chambers with protocol "plc" are not connected here: the Live tab and the
+Agent API reach them over the PLC gate.
 """
 
 import time
@@ -32,7 +34,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import app.services.chambers_service as chambers_service
 import app.services.test_profiles_service as test_profiles_service
+from app.chamber_alarms import ChamberAlarmsPanel
+from app.services.chamber_session import MAX_CONNECTED_CHAMBERS
 
 
 def _format_hms(seconds):
@@ -54,24 +59,53 @@ class ControllerMixin:
         hdr.setObjectName("pageTitle")
         outer.addWidget(hdr)
 
-        chamber_row = QHBoxLayout()
-        chamber_lbl = QLabel(self.tr("Chamber"))
+        self._ctrl_chambers = {}  # saved chambers by id, see _refresh_controller_chamber_choices()
+        self._ctrl_alarms = ChamberAlarmsPanel(current_user=self.current_user)
+
+        # ── Chamber: pick, connect, settings ─────────────────────────────────
+        chamber_card = QFrame()
+        chamber_card.setObjectName("card")
+        ccl = QVBoxLayout(chamber_card)
+        ccl.setContentsMargins(14, 14, 14, 14)
+        ccl.setSpacing(10)
+        chamber_hdr = QHBoxLayout()
+        chamber_lbl = QLabel(self.tr("CHAMBER"))
         chamber_lbl.setObjectName("sectionLabel")
-        chamber_row.addWidget(chamber_lbl)
+        chamber_hdr.addWidget(chamber_lbl)
+        chamber_hdr.addStretch(1)
+        self._ctrl_count_lbl = QLabel()
+        self._ctrl_count_lbl.setObjectName("sectionLabel")
+        chamber_hdr.addWidget(self._ctrl_count_lbl)
+        ccl.addLayout(chamber_hdr)
+
+        chamber_row = QHBoxLayout()
+        chamber_row.setSpacing(8)
         self._ctrl_chamber_combo = QComboBox()
-        self._ctrl_chamber_combo.setMinimumWidth(200)
+        self._ctrl_chamber_combo.setMinimumWidth(300)
+        self._ctrl_chamber_combo.setToolTip(self.tr("Saved chambers. ● connected."))
         self._ctrl_chamber_combo.currentIndexChanged.connect(self._refresh_controller_page)
         chamber_row.addWidget(self._ctrl_chamber_combo)
+        settings_btn = QPushButton(self.tr("Chamber Settings…"))
+        settings_btn.setToolTip(self.tr("Add, edit or delete saved chambers"))
+        settings_btn.clicked.connect(self._open_chambers_dialog)
+        chamber_row.addWidget(settings_btn)
+        self._ctrl_connect_btn = QPushButton(self.tr("Connect"))
+        self._ctrl_connect_btn.setObjectName("primaryButton")
+        self._ctrl_connect_btn.clicked.connect(self._on_ctrl_connect_clicked)
+        chamber_row.addWidget(self._ctrl_connect_btn)
         chamber_row.addStretch(1)
+        ccl.addLayout(chamber_row)
+
+        status_row = QHBoxLayout()
         self._ctrl_chamber_dot = QLabel("●")
         self._ctrl_chamber_dot.setObjectName("chamberIconOff")
-        chamber_row.addWidget(self._ctrl_chamber_dot)
-        self._ctrl_chamber_status_lbl = QLabel(
-            self.tr("No chambers connected — connect one in Live Monitoring.")
-        )
+        status_row.addWidget(self._ctrl_chamber_dot)
+        self._ctrl_chamber_status_lbl = QLabel()
         self._ctrl_chamber_status_lbl.setObjectName("statusText")
-        chamber_row.addWidget(self._ctrl_chamber_status_lbl)
-        outer.addLayout(chamber_row)
+        self._ctrl_chamber_status_lbl.setWordWrap(True)
+        status_row.addWidget(self._ctrl_chamber_status_lbl, 1)
+        ccl.addLayout(status_row)
+        outer.addWidget(chamber_card)
 
         # ── Manual Setpoint ──────────────────────────────────────────────────
         manual_card = QFrame()
@@ -150,7 +184,9 @@ class ControllerMixin:
 
         self._load_test_profiles()
         outer.addWidget(profiles_card)
-        outer.addStretch(1)
+
+        # ── Alarms (sample-feed chambers) ────────────────────────────────────
+        outer.addWidget(self._ctrl_alarms, 1)
 
         # A cheap 1s tick keeps the elapsed-time labels moving even between
         # a session's own state-change signals (which only fire on actual
@@ -169,28 +205,120 @@ class ControllerMixin:
         chamber_id = self._ctrl_chamber_combo.currentData()
         return self._chamber_sessions.get(chamber_id) if chamber_id is not None else None
 
+    def _selected_controller_chamber(self):
+        chamber_id = self._ctrl_chamber_combo.currentData()
+        session = self._chamber_sessions.get(chamber_id)
+        if session is not None:
+            return session.chamber
+        return self._ctrl_chambers.get(chamber_id)
+
     def _refresh_controller_chamber_choices(self):
-        """Called from main_window whenever a chamber connects/disconnects
-        (see monitoring.py's _on_mon_connect_new/_on_monitor_tab_closed) so
-        this page's Chamber combo always reflects what's actually open in
-        Live Monitoring."""
+        """Every saved chamber, connected ones marked ●. Called from main_window
+        whenever a chamber connects/disconnects or the saved list changes."""
         previous_id = self._ctrl_chamber_combo.currentData()
+        try:
+            saved = chambers_service.list_chambers()
+        except Exception:
+            saved = []
+        # connected chambers stay listed even if their saved entry went away
+        self._ctrl_chambers = {c["id"]: c for c in saved}
+        for chamber_id, session in self._chamber_sessions.items():
+            self._ctrl_chambers.setdefault(chamber_id, session.chamber)
         self._ctrl_chamber_combo.blockSignals(True)
         self._ctrl_chamber_combo.clear()
-        for session in self._chamber_sessions.values():
-            self._ctrl_chamber_combo.addItem(session.chamber["name"], session.chamber["id"])
+        for chamber in self._ctrl_chambers.values():
+            mark = "● " if chamber["id"] in self._chamber_sessions else ""
+            kind = "PLC" if chamber.get("protocol") == "plc" else "JSON"
+            self._ctrl_chamber_combo.addItem(
+                f"{mark}{chamber['name']}  ({chamber['host']}:{chamber['port']} · {kind})",
+                chamber["id"],
+            )
         if self._ctrl_chamber_combo.count():
+            # keep the selection; otherwise prefer a connected chamber
+            fallback = next(
+                (
+                    i
+                    for i in range(self._ctrl_chamber_combo.count())
+                    if self._ctrl_chamber_combo.itemData(i) in self._chamber_sessions
+                ),
+                0,
+            )
             idx = next(
                 (
                     i
                     for i in range(self._ctrl_chamber_combo.count())
                     if self._ctrl_chamber_combo.itemData(i) == previous_id
                 ),
-                0,
+                fallback,
             )
             self._ctrl_chamber_combo.setCurrentIndex(idx)
         self._ctrl_chamber_combo.blockSignals(False)
+        self._ctrl_count_lbl.setText(
+            self.tr("{0} / {1} connected").format(
+                len(self._chamber_sessions), MAX_CONNECTED_CHAMBERS
+            )
+        )
         self._refresh_controller_page()
+
+    def _open_chambers_dialog(self):
+        from app.chambers_dialog import ChambersDialog
+
+        dlg = ChambersDialog(parent=self)
+        dlg.exec()
+        if dlg.changed:
+            self._refresh_chamber_ui()  # this combo, and the Live tab's chamber list
+
+    def _on_ctrl_connect_clicked(self):
+        chamber = self._selected_controller_chamber()
+        if chamber is None:
+            QMessageBox.warning(
+                self, self.tr("Connect"), self.tr("Add a chamber first (Chamber Settings…).")
+            )
+            return
+        session = self._chamber_sessions.get(chamber["id"])
+        if session is None:
+            try:
+                self._connect_chamber(chamber)  # also refreshes this page
+            except RuntimeError as exc:
+                QMessageBox.warning(self, self.tr("Connect"), str(exc))
+            return
+        if session.mon_buffer:
+            answer = QMessageBox.question(
+                self,
+                self.tr("Disconnect"),
+                self.tr(
+                    "{0} sample(s) recorded from {1} are not saved. Save them as a run first?"
+                ).format(len(session.mon_buffer), chamber["name"]),
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            )
+            if answer == QMessageBox.Cancel:
+                return
+            if answer == QMessageBox.Save and not self._save_session_as_run(session):
+                return
+        self._disconnect_chamber(chamber["id"])
+
+    def _save_session_as_run(self, session):
+        """Saves a connected chamber's recorded samples as a run; False if that failed."""
+        from datetime import datetime
+
+        from app.services import data_service
+
+        started = datetime.fromtimestamp(session.mon_buffer[0]["timestamp"]).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        try:
+            result = data_service.save_monitoring_session(
+                f"{started} {session.chamber['name']}",
+                session.mon_buffer,
+                chamber=session.chamber["name"],
+                test_profile=session.session_test_profile_name,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr("Save failed"), str(exc))
+            return False
+        session.clear_buffer()
+        self._on_live_run_saved(result["key"])
+        return True
 
     def _on_controller_session_changed(self, session):
         """Connected (in main_window._connect_chamber) to every session's
@@ -203,24 +331,47 @@ class ControllerMixin:
 
     def _refresh_controller_page(self):
         session = self._selected_controller_session()
+        chamber = self._selected_controller_chamber()
         connected = session.is_connected() if session else False
+        is_plc = chamber is not None and chamber.get("protocol") == "plc"
         self._ctrl_chamber_dot.setObjectName("chamberIconOn" if connected else "chamberIconOff")
         self._ctrl_chamber_dot.style().unpolish(self._ctrl_chamber_dot)
         self._ctrl_chamber_dot.style().polish(self._ctrl_chamber_dot)
-        if session:
-            chamber = session.chamber
-            text = (
-                self.tr("Connected — {0} ({1}:{2})")
-                if connected
-                else self.tr("Offline — {0} ({1}:{2})")
+        if chamber is None:
+            status = self.tr("No saved chambers — add one with Chamber Settings….")
+        elif is_plc:
+            status = self.tr(
+                "{0} is a chamber PLC: it connects by itself and is followed in Analysis → Live; "
+                "the agents control it through the Agent API, with your approval."
+            ).format(chamber["name"])
+        elif session is None:
+            status = self.tr("Not connected — {0} ({1}:{2})").format(
+                chamber["name"], chamber["host"], chamber["port"]
             )
-            self._ctrl_chamber_status_lbl.setText(
-                text.format(chamber["name"], chamber["host"], chamber["port"])
-            )
+        elif connected:
+            status = self.tr(
+                "Connected — {0} ({1}:{2}) · recording {3} sample(s); follow it in Analysis → Live"
+            ).format(chamber["name"], chamber["host"], chamber["port"], len(session.mon_buffer))
         else:
-            self._ctrl_chamber_status_lbl.setText(
-                self.tr("No chambers connected — connect one in Live Monitoring.")
+            note = session.connection_note or self.tr("connecting…")
+            status = self.tr("Offline — {0} ({1}:{2}): {3}").format(
+                chamber["name"], chamber["host"], chamber["port"], note
             )
+        self._ctrl_chamber_status_lbl.setText(status)
+        at_cap = len(self._chamber_sessions) >= MAX_CONNECTED_CHAMBERS
+        self._ctrl_connect_btn.setText(self.tr("Disconnect") if session else self.tr("Connect"))
+        self._ctrl_connect_btn.setEnabled(
+            chamber is not None and not is_plc and (session is not None or not at_cap)
+        )
+        self._ctrl_connect_btn.setToolTip(
+            self.tr("Up to {0} chambers can be connected at once.").format(MAX_CONNECTED_CHAMBERS)
+            if at_cap and session is None
+            else ""
+        )
+        alarms_target = None if is_plc else chamber
+        if (self._ctrl_alarms.chamber, self._ctrl_alarms.session) != (alarms_target, session):
+            self._ctrl_alarms.set_target(alarms_target, session)
+        self._ctrl_alarms.setVisible(not is_plc)
         self._update_manual_status_label(session)
         self._update_test_status_label(session)
         self._update_controller_buttons(session)

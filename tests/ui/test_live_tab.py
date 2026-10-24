@@ -56,11 +56,11 @@ def plc_chamber(deepvac_data_dir):
     server.close()
 
 
-def test_idle_without_a_plc_chamber(deepvac_data_dir, qapp, qtbot, qsettings_isolated):
+def test_idle_without_a_chamber(deepvac_data_dir, qapp, qtbot, qsettings_isolated):
     links = ChamberLinks()
     page = LiveTabPage(links)
     qtbot.addWidget(page)
-    assert "No PLC chamber" in page.idle_label.text()
+    assert "No chamber to follow" in page.idle_label.text()
     assert not page.save_btn.isEnabled()
     links.close()
 

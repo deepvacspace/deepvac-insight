@@ -5,8 +5,8 @@ their own local SQLite database.
 Replaces the "Recipe" concept the Dashboard's filter row used to have a
 placeholder for: unlike a recipe (never modeled anywhere else in this
 app), a test profile is a real, editable schedule you can create here and
-then run against a connected chamber from Live Monitoring (see
-views/monitoring.py's step-sequencer, which sends each step's setpoint via
+then run against a connected chamber from the Controller page (see
+chamber_session.ChamberSession.s step-sequencer, which sends each step's setpoint via
 services/tcp_client.ChamberConnection.send_command() as its turn comes up).
 
 Two tables: test_profiles (name, description) and test_profile_steps (one

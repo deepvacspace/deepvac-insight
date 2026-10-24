@@ -22,7 +22,7 @@ insight/
 │   │   ├── licensing_client.py     # hub cloud-licensing client (device activation/renewal)
 │   │   ├── annotations_service.py  # chart annotations + variable rules (sqlite), per run/user
 │   │   ├── backup_service.py       # automated sqlite backups + restore
-│   │   ├── tcp_client.py           # live chamber TCP connection (Live Monitoring)
+│   │   ├── tcp_client.py           # live chamber TCP connection (sample feeds, Controller page)
 │   │   └── opc_broadcast_server.py # real OPC UA server publishing chamber samples (OPC Server page)
 │   ├── views/            # one module per page (dashboard, runs, reports, simulator, monitoring, opc)
 │   └── model/             # bundled GRU checkpoint + closed-loop simulator
@@ -138,14 +138,27 @@ or **Open Backups Folder** to browse them. To restore, call
 `backup_service.restore_backup(db_name, backup_path)` — it safety-copies the
 current (possibly damaged) database first, so a bad restore can be undone.
 
-## Live Monitoring & OPC Server
+## Chamber connections & OPC Server
 
-Live Monitoring connects to a real chamber over TCP (`app/services/tcp_client.py`,
-built on `QTcpSocket`). Wire protocol: newline-delimited JSON, one object per
-line, with the same keys as a `run_samples.csv` row (`temp`, `temp_ref`,
-`kp`, `ki`, `kd`, `temp_u`, `temp_u_p`, `temp_u_i`, `temp_u_d`).
+Chambers are added and edited on the **Controller** page (**Chamber
+Settings…**) and connected there with **Connect**; the Controller also holds
+the manual setpoint, test profiles and each chamber's alarm rules. A
+connected chamber's live data, stages, KPIs and anomalies are followed in
+Analysis' **● Live** tab, which also saves the recording as a run
+(Live Monitoring, the old per-chamber page, was removed). Disconnecting a
+chamber with unsaved samples offers to save them first.
 
-The OPC Server page can only be started once that chamber connection is
+A chamber's connection is one of:
+
+- **Sample feed (JSON)**: TCP (`app/services/tcp_client.py`, built on
+  `QTcpSocket`), newline-delimited JSON, one object per line, with the same
+  keys as a `run_samples.csv` row (`temp`, `temp_ref`, `kp`, `ki`, `kd`,
+  `temp_u`, `temp_u_p`, `temp_u_i`, `temp_u_d`), e.g. DeepVac Control's
+  insight server. Connected from the Controller.
+- **Chamber PLC**: the PLC itself over the PLC gate (see *Agent API* below).
+  Connects by itself when the Live tab or the Agent API needs it.
+
+The OPC Server page (hidden from the sidebar for now) can only be started once a chamber connection is
 established — it runs a real, spec-compliant OPC UA server (built on
 `asyncua`, see `app/services/opc_broadcast_server.py`) that publishes each
 key of an incoming sample as a variable node under
@@ -160,7 +173,7 @@ control isn't wired up yet. Disconnecting the chamber connection
 automatically stops the server.
 
 To test this without real hardware, run the dummy chamber server
-(`tcp/`) and point Live Monitoring at it:
+(`tcp/`) and connect to it from the Controller page:
 
 ```powershell
 python tcp\dummy_chamber_server.py --port 5555
@@ -219,7 +232,7 @@ It shares its PLC connections with the Agent API.
 The worker talks to the chamber PLC directly over its binary protocol
 (`app/services/plc_gate.py`, ported from control2-client's `GateTcp`):
 chambers with protocol `plc` in the chambers registry. Chambers with
-protocol `json` are Live Monitoring feeds and can't be controlled through
+protocol `json` are sample feeds (connected from the Controller page) and can't be controlled through
 the API. Without hardware, run the fake PLC and register it as a `plc`
 chamber:
 

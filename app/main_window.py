@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.common import ICON_PATH, _nav_icon, _svg_icon
-from app.monitor_tab import MonitorTabPage
 from app.services import collab_client, i18n_service, settings_service
 from app.services.chamber_session import MAX_CONNECTED_CHAMBERS, ChamberSession
 from app.services.collab_server import CollabServer
@@ -22,7 +21,6 @@ from app.tab_system import EditorArea
 from app.title_bar import TitleBar
 from app.views.controller import ControllerMixin
 from app.views.dashboard import DashboardMixin
-from app.views.monitoring import MonitoringMixin
 from app.views.opc import OpcMixin
 from app.views.reports import ReportsMixin
 from app.views.runs import RunsMixin
@@ -34,7 +32,6 @@ class DeepVacDesktop(
     RunsMixin,
     SimulatorMixin,
     ReportsMixin,
-    MonitoringMixin,
     ControllerMixin,
     OpcMixin,
     QMainWindow,
@@ -106,14 +103,14 @@ class DeepVacDesktop(
         except Exception as exc:
             print(f"[backup] periodic backup skipped: {exc}")
 
-    # ── Chamber connections (shared by Live Monitoring, Controller, OPC Server) ─
+    # ── Chamber connections (shared by Controller, the Live tab, OPC Server) ──
     #
-    # Up to MAX_CONNECTED_CHAMBERS ChamberSessions can be open at once, each
-    # owning one tab in self.monitor_editor_area (see views/monitoring.py).
-    # This is the one place that creates/destroys them so Controller
-    # (views/controller.py) and the OPC broadcast server can both reach
-    # whichever chambers are currently connected without owning the
-    # lifecycle themselves.
+    # Up to MAX_CONNECTED_CHAMBERS ChamberSessions (sample-feed chambers) can
+    # be open at once, connected from the Controller page and followed in
+    # Analysis' Live tab. This is the one place that creates/destroys them so
+    # Controller (views/controller.py), the Live tab and the OPC broadcast
+    # server can all reach whichever chambers are currently connected without
+    # owning the lifecycle themselves.
 
     def _connect_chamber(self, chamber):
         if chamber["id"] in self._chamber_sessions:
@@ -136,9 +133,14 @@ class DeepVacDesktop(
             lambda s=session: self._on_controller_session_changed(s)
         )
         session.test_state_changed.connect(lambda s=session: self._on_controller_session_changed(s))
-
-        page = MonitorTabPage(session, current_user=self.current_user)
-        self.monitor_editor_area.open_run(f"chamber-{chamber['id']}", chamber["name"], page)
+        for signal in (
+            session.connected,
+            session.disconnected,
+            session.connection_error,
+            session.reconnecting,
+            session.reconnect_failed,
+        ):
+            signal.connect(lambda *_args, s=session: self._on_controller_session_changed(s))
 
         session.connect()
         self._refresh_chamber_ui()
@@ -162,11 +164,12 @@ class DeepVacDesktop(
         """The one place that keeps every chamber-count-dependent widget in
         sync after a session is added or removed -- called by both
         _connect_chamber() and _disconnect_chamber() so callers (the
-        Monitoring page's Connect button, a tab's close button, tests) never
-        need to remember to refresh each page themselves."""
-        self._load_chamber_choices()
-        self._update_mon_count_label()
+        Controller's Connect / Disconnect button, tests) never need to
+        remember to refresh each page themselves."""
         self._refresh_controller_chamber_choices()
+        live = self.editor_area.page_for("live") if hasattr(self, "editor_area") else None
+        if live is not None:
+            live.reload_chambers()
         self._recompute_chamber_aggregate_status()
 
     def _recompute_chamber_aggregate_status(self):
@@ -231,16 +234,14 @@ class DeepVacDesktop(
         self.editor_area.active_page_changed.connect(self._on_active_page_changed)
         self.sim_widget = self._sim_view()  # 3
         self.reports_widget = self._reports_view()  # 4
-        self.monitor_widget = self._monitoring_view()  # 5
-        self.controller_widget = self._controller_view()  # 6
-        self.opc_widget = self._opc_view()  # 7
+        self.controller_widget = self._controller_view()  # 5
+        self.opc_widget = self._opc_view()  # 6
         for w in [
             self.dashboard_widget,
             self.runs_widget,
             self.editor_area,
             self.sim_widget,
             self.reports_widget,
-            self.monitor_widget,
             self.controller_widget,
             self.opc_widget,
         ]:
@@ -276,10 +277,13 @@ class DeepVacDesktop(
             ("act_analysis_btn", "activity", self.tr("Analysis"), 2),
             ("act_sim_btn", "cpu", self.tr("Simulator"), 3),
             ("act_reports_btn", "file-earmark", self.tr("Reports"), 4),
-            ("act_monitor_btn", "graph-up", self.tr("Monitor"), 5),
-            ("act_controller_btn", "square", self.tr("Controller"), 6),
-            ("act_opc_btn", "broadcast", self.tr("OPC Server"), 7),
+            ("act_controller_btn", "square", self.tr("Controller"), 5),
+            ("act_opc_btn", "broadcast", self.tr("OPC Server"), 6),
         ]
+        # Reports and OPC Server are hidden from the sidebar: reports are
+        # downloaded from the Runs list, and the OPC broadcast is off the menu for
+        # now. Their pages stay built, so page indexes don't change.
+        hidden_pages = {4, 6}
         self._nav_buttons = []
         for attr, icon_name, label, idx in nav_defs:
             btn = QPushButton()
@@ -293,6 +297,7 @@ class DeepVacDesktop(
             setattr(self, attr, btn)
             self._nav_buttons.append(btn)
             lay.addWidget(btn)
+            btn.setVisible(idx not in hidden_pages)
 
         lay.addStretch(1)
 
@@ -331,7 +336,7 @@ class DeepVacDesktop(
             self._refresh_dashboard()
         elif index == 4:
             self._refresh_reports()
-        elif index == 6:
+        elif index == 5:
             self._load_test_profiles()
 
     # ── Settings ──────────────────────────────────────────────────────────────
@@ -407,7 +412,9 @@ class DeepVacDesktop(
 
         page = self.editor_area.page_for(LIVE_KEY)
         if page is None:
-            page = LiveTabPage(self.plc_links, dark=self.dark)
+            page = LiveTabPage(
+                self.plc_links, dark=self.dark, sessions=lambda: self._chamber_sessions
+            )
             page.run_saved.connect(self._on_live_run_saved)
         self.editor_area.open_run(
             LIVE_KEY, self.tr("● Live"), page
@@ -1030,7 +1037,6 @@ class DeepVacDesktop(
         self.setStyleSheet(css)
         self.sim_chart.set_dark(self.dark)
         self.editor_area.update_theme(self.dark)
-        self.monitor_editor_area.update_theme(self.dark)
         dash_bg = "#111827" if self.dark else "#f8fafc"
         for p in [self._dash_mae_plot, self._dash_ovr_plot]:
             p.setBackground(dash_bg)

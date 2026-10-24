@@ -1,6 +1,7 @@
 """RunsMixin — builds the Runs browser page and manages run opening/comparison."""
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QRect, QSize, Qt, QThread, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -10,15 +11,136 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
+import app.common as common
 import app.services.data_service as data
 import app.services.settings_service as settings_service
 from app.common import _svg_icon, fmt
 from app.run_tab import RunTabPage
+
+RUN_DETAILS_ROLE = Qt.UserRole + 1  # "20 min · 601 samples"
+
+
+def _duration_text(seconds):
+    if seconds is None:
+        return "—"
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} min" if secs < 30 or minutes >= 10 else f"{minutes} min {secs} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes:02d} min"
+
+
+def safe_report_filename(run_id):
+    safe = "".join(ch if ch not in '<>:"/\\|?*' else "_" for ch in str(run_id)).strip()
+    return safe or "run"
+
+
+class RunListDelegate(QStyledItemDelegate):
+    """Runs list row: check box, name, duration · samples, and a report download button.
+
+    Painted rather than built from widgets: the list holds over a thousand
+    runs and is rebuilt on every search keystroke."""
+
+    download_requested = Signal(str)  # run key
+    ICON = 16
+    PAD = 10
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._icons = {}
+
+    def sizeHint(self, option, index):
+        return QSize(0, 46)  # the list gives every row its full width
+
+    def icon_rect(self, rect):
+        return QRect(
+            rect.right() - self.PAD - self.ICON - 6,
+            rect.center().y() - (self.ICON + 12) // 2,
+            self.ICON + 12,
+            self.ICON + 12,
+        )
+
+    def _icon(self, color):
+        if color not in self._icons:
+            self._icons[color] = _svg_icon("download", color, self.ICON).pixmap(
+                self.ICON, self.ICON
+            )
+        return self._icons[color]
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        name = opt.text
+        opt.text = ""  # background, selection and check box from the style; texts drawn below
+        widget = opt.widget
+        style = widget.style()
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)
+
+        text_rect = style.subElementRect(QStyle.SE_ItemViewItemText, opt, widget)
+        icon_rect = self.icon_rect(option.rect)
+        text_rect.setRight(icon_rect.left() - 6)
+        selected = bool(option.state & QStyle.State_Selected)
+        main = (
+            option.palette.highlightedText().color() if selected else option.palette.text().color()
+        )
+        muted = QColor(main)
+        muted.setAlpha(150)
+
+        painter.save()
+        font = QFont(option.font)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(main)
+        top = QRect(text_rect.left(), option.rect.top() + 5, text_rect.width(), 18)
+        painter.drawText(
+            top,
+            Qt.AlignLeft | Qt.AlignVCenter,
+            painter.fontMetrics().elidedText(name, Qt.ElideRight, top.width()),
+        )
+        small = QFont(option.font)
+        small.setPointSizeF(max(7.0, option.font.pointSizeF() - 1.0))
+        painter.setFont(small)
+        painter.setPen(muted)
+        bottom = QRect(text_rect.left(), option.rect.top() + 24, text_rect.width(), 16)
+        painter.drawText(bottom, Qt.AlignLeft | Qt.AlignVCenter, index.data(RUN_DETAILS_ROLE) or "")
+        hovered = bool(option.state & QStyle.State_MouseOver)
+        if hovered:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(127, 127, 127, 50))
+            painter.drawRoundedRect(icon_rect, 6, 6)
+        pixmap = self._icon("#60a5fa" if hovered else "#94a3b8")
+        painter.drawPixmap(
+            icon_rect.center().x() - self.ICON // 2, icon_rect.center().y() - self.ICON // 2, pixmap
+        )
+        painter.restore()
+
+    def editorEvent(self, event, model, option, index):
+        mouse = (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick)
+        if event.type() in mouse and self.icon_rect(option.rect).contains(
+            event.position().toPoint()
+        ):
+            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                self.download_requested.emit(index.data(Qt.UserRole))
+            return True  # the click was for the button, not for selecting or opening the run
+        return super().editorEvent(event, model, option, index)
+
+    def helpEvent(self, event, view, option, index):
+        if self.icon_rect(option.rect).contains(event.pos()):
+            QToolTip.showText(event.globalPos(), self.tr("Download the run's report (.xlsx)"), view)
+            return True
+        return super().helpEvent(event, view, option, index)
 
 
 class UploadWorker(QThread):
@@ -79,6 +201,11 @@ class RunsMixin:
         self.run_list = QListWidget()
         self.run_list.setObjectName("runList")
         self.run_list.setUniformItemSizes(True)
+        self.run_list.setMouseTracking(True)  # hover highlight of the download button
+        self.run_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # long names are elided
+        self._run_list_delegate = RunListDelegate(self.run_list)
+        self._run_list_delegate.download_requested.connect(self._download_run_report)
+        self.run_list.setItemDelegate(self._run_list_delegate)
         self.run_list.itemChanged.connect(self._run_checked)
         self.run_list.itemDoubleClicked.connect(self._open_run_item)
         self.run_list.currentItemChanged.connect(self._on_run_selected)
@@ -143,10 +270,40 @@ class RunsMixin:
                 continue
             item = QListWidgetItem(run["id"])
             item.setData(Qt.UserRole, run["key"])
+            samples = run.get("samples")
+            item.setData(
+                RUN_DETAILS_ROLE,
+                self.tr("{0} · {1} samples").format(
+                    _duration_text(run.get("duration_s")), samples if samples is not None else "—"
+                ),
+            )
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if run["key"] in compare_keys else Qt.Unchecked)
             self.run_list.addItem(item)
         self.run_list.blockSignals(False)
+
+    def _download_run_report(self, key):
+        """Writes the run's report (all samples, .xlsx) where the user chooses; by default the
+        reports folder, which is where the Dashboard looks for missing reports."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        run = next((r for r in self.runs if r["key"] == key), None)
+        if not run:
+            return
+        reports_dir = common.REPORTS_DIR
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        default = reports_dir / f"{safe_report_filename(run['id'])}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(
+            self, self.tr("Download report"), str(default), self.tr("Excel workbook (*.xlsx)")
+        )
+        if not path:
+            return
+        try:
+            data.make_report_xlsx(key, path)
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr("Report error"), str(exc))
+            return
+        self._refresh_dashboard()
 
     def _open_run_item(self, item):
         self._open_run(item.data(Qt.UserRole))
