@@ -15,6 +15,7 @@ an optional label) -- a step needs at least one setpoint set; a step with
 neither would just be "wait", which isn't useful on its own here.
 """
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -62,6 +63,13 @@ def connect_test_profiles(db_path=None):
         """
     )
     _ensure_hub_sync_columns(conn)
+    # The PLC program of a profile imported from control2-client:
+    # {"intervals": [{duration, temp, flags, ...}], "cycle": {count, start, end}},
+    # sent as-is in a PLC gate JOB (plc_gate.encode_job). NULL for profiles
+    # made here, which run from their steps.
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(test_profiles)")}
+    if "program_json" not in existing:
+        conn.execute("ALTER TABLE test_profiles ADD COLUMN program_json TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS test_profile_steps (
@@ -111,6 +119,7 @@ def _profile_row(conn, row):
         "created_at": row["created_at"],
         "hub_id": row["hub_id"],
         "hub_synced_at": row["hub_synced_at"],
+        "program": json.loads(row["program_json"]) if row["program_json"] else None,
         "steps": [_step_row(s) for s in steps],
     }
 

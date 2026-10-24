@@ -165,3 +165,71 @@ To test this without real hardware, run the dummy chamber server
 ```powershell
 python tcp\dummy_chamber_server.py --port 5555
 ```
+
+## Agent API
+
+An MCP server (`app/api/`) that the DeepVac crew of AI agents (`../agents`,
+n8n) calls. Two endpoints, one bearer token:
+
+| Endpoint | For | Tools |
+|---|---|---|
+| `http://127.0.0.1:8765/analyst/mcp` | Analyst | list / rank runs, run summary, stages, KPIs, statistics, anomalies, compare runs, channels, events, CSV export, PID simulation on the GRU twin. Read-only. |
+| `http://127.0.0.1:8765/worker/mcp` | Worker | chambers, live status, PLC settings, programs; requests to set a temperature, run a program or stop |
+
+**Only a person approves.** The worker's `request_*` tools never change a
+chamber: they create a request in `data\deepvac_agent_requests.sqlite3`. The
+**Agent Requests** dialog (gear menu; it also opens by itself when a request
+arrives) shows it; a signed-in user approves or rejects it, and only then
+does the API send it to the PLC. Undecided requests expire after 30 minutes.
+
+Turn it on with gear menu → **Agent API** (remembered), or run it without
+the desktop app:
+
+```powershell
+uv run python -m app.api                # serves the API and sends approved requests
+uv run python -m app.api --show-token   # prints the bearer token (also: gear menu -> Copy Agent API Token)
+```
+
+The token is generated once into `data\agent_api_token`, or set
+`DEEPVAC_AGENT_API_TOKEN`. The server listens on 127.0.0.1 only; n8n in
+Docker Desktop reaches it as `host.docker.internal`.
+
+### Chamber control: the PLC gate
+
+The worker talks to the chamber PLC directly over its binary protocol
+(`app/services/plc_gate.py`, ported from control2-client's `GateTcp`):
+chambers with protocol `plc` in the chambers registry. Chambers with
+protocol `json` are Live Monitoring feeds and can't be controlled through
+the API. Without hardware, run the fake PLC and register it as a `plc`
+chamber:
+
+```powershell
+uv run python scripts/fake_plc.py --port 4321
+```
+
+The job encoding (manual setpoint, programs) mirrors control2-client and has
+been checked against the fake PLC only: try it on a test chamber before
+relying on it.
+
+### Analysis Core
+
+`app/core/analysis/` is a port of control2-client's Analysis Core (stages,
+KPIs, steady states, saturation, PID shares, anomalies, comparisons). It
+reproduces the C++ results exactly; `tests/unit/core/test_analysis_port.py`
+checks it against C++ output for real runs, and
+`scripts/check_analysis_port.py` compares it with every summary a
+control2-client run database stored.
+
+### Importing control2-client's data
+
+```powershell
+uv run python scripts/import_control_data.py --control ..\..\control2-client --dry-run
+uv run python scripts/import_control_data.py --control ..\..\control2-client
+```
+
+Copies its runs, test programs, the PLC (`settings.json` `tcp_server`) as a
+`plc` chamber and the chamber configuration (`data\control_settings.json`:
+states, program parameters, limits, alarm labels). It backs up each database
+first (`data\backups\`), never deletes, and skips what is already here. Runs
+that exist both as a synced folder run and as an imported run are listed
+once by the API (the imported copy, which has units and events).

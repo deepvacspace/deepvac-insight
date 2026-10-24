@@ -50,6 +50,7 @@ def deepvac_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(common, "DATA_DIR", data_dir)
     monkeypatch.setattr(common, "REPORTS_DIR", data_dir / "reports")
 
+    import app.services.agent_requests_service as agent_requests_service
     import app.services.alarms_service as alarms_service
     import app.services.annotations_service as annotations_service
     import app.services.auth_service as auth_service
@@ -85,6 +86,11 @@ def deepvac_data_dir(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         test_profiles_service, "TEST_PROFILES_DB", data_dir / "deepvac_test_profiles.sqlite3"
+    )
+    monkeypatch.setattr(
+        agent_requests_service,
+        "AGENT_REQUESTS_DB",
+        data_dir / "deepvac_agent_requests.sqlite3",
     )
 
     return data_dir

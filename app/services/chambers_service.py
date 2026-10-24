@@ -54,6 +54,13 @@ def connect_chambers(db_path=None):
         """
     )
     _ensure_hub_sync_columns(conn)
+    # How the chamber is reached: "json" -- the newline-JSON sample feed
+    # (tcp_client.py, control2-client's insight server); "plc" -- the PLC
+    # itself over the PLC gate protocol (plc_gate.py), which the agent API
+    # also uses to send commands.
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(chambers)")}
+    if "protocol" not in existing:
+        conn.execute("ALTER TABLE chambers ADD COLUMN protocol TEXT NOT NULL DEFAULT 'json'")
     conn.commit()
 
     # Seed one default entry on first run so the chamber dropdown is never
@@ -81,6 +88,7 @@ def _row(row):
         "created_at": row["created_at"],
         "hub_id": row["hub_id"],
         "hub_synced_at": row["hub_synced_at"],
+        "protocol": row["protocol"],
     }
 
 
@@ -106,14 +114,19 @@ def _validate(name, host, port):
         raise ChamberError("Port must be between 1 and 65535.")
 
 
-def add_chamber(name, host, port, hub_id=None):
+PROTOCOLS = ("json", "plc")
+
+
+def add_chamber(name, host, port, hub_id=None, protocol="json"):
     _validate(name, host, port)
+    if protocol not in PROTOCOLS:
+        raise ChamberError(f"Protocol must be one of {', '.join(PROTOCOLS)}.")
     conn = connect_chambers()
     try:
         try:
             cur = conn.execute(
-                "INSERT INTO chambers (name, host, port, created_at, hub_id, hub_synced_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO chambers (name, host, port, created_at, hub_id, hub_synced_at, protocol) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     name.strip(),
                     host.strip(),
@@ -121,6 +134,7 @@ def add_chamber(name, host, port, hub_id=None):
                     _now(),
                     hub_id,
                     _now() if hub_id else None,
+                    protocol,
                 ),
             )
         except sqlite3.IntegrityError as exc:

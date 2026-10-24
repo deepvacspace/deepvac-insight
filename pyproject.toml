@@ -17,6 +17,7 @@ dependencies = [
     "torch==2.12.1",
     "asyncua==2.0.1",
     "cryptography==43.0.1",
+    "mcp>=1.12",
 ]
 
 [project.optional-dependencies]

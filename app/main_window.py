@@ -77,6 +77,17 @@ class DeepVacDesktop(
         self._backup_timer.timeout.connect(self._run_background_backup)
         self._backup_timer.start(6 * 60 * 60 * 1000)
 
+        # Agent API (app/api): the MCP server the n8n agents call. Chamber
+        # actions they request wait in Agent Requests for a person to approve.
+        self.agent_api = None
+        self._agent_requests_dialog = None
+        self._known_pending_requests = 0
+        if settings_service.load_agent_api_enabled():
+            self._start_agent_api()
+        self._agent_requests_timer = QTimer(self)
+        self._agent_requests_timer.timeout.connect(self._check_agent_requests)
+        self._agent_requests_timer.start(5000)
+
     def _run_background_backup(self):
         from app.services import backup_service
 
@@ -170,6 +181,7 @@ class DeepVacDesktop(
         if self.opc_server.is_running():
             self.opc_server.stop()
         self.collab_server.stop()
+        self._stop_agent_api()
         for session in list(self._chamber_sessions.values()):
             session.teardown()
         super().closeEvent(event)
@@ -335,6 +347,20 @@ class DeepVacDesktop(
         menu.addSeparator()
         act_backup_now = menu.addAction(self.tr("Back Up Now"))
         act_open_backups = menu.addAction(self.tr("Open Backups Folder"))
+
+        menu.addSeparator()
+        pending = self._pending_agent_requests()
+        act_agent_requests = menu.addAction(
+            self.tr("Agent Requests ({0} pending)…").format(pending)
+            if pending
+            else self.tr("Agent Requests…")
+        )
+        act_agent_api = menu.addAction(self.tr("Agent API"))
+        act_agent_api.setCheckable(True)
+        act_agent_api.setChecked(self.agent_api is not None)
+        act_agent_token = menu.addAction(self.tr("Copy Agent API Token"))
+        act_agent_token.setEnabled(self.agent_api is not None)
+
         btn = self.act_settings_btn
         chosen = menu.exec(btn.mapToGlobal(QPoint(btn.width() + 4, 0)))
         if chosen == act_dark and not self.dark:
@@ -347,8 +373,95 @@ class DeepVacDesktop(
             self._backup_now()
         elif chosen == act_open_backups:
             self._open_backups_folder()
+        elif chosen == act_agent_requests:
+            self._show_agent_requests()
+        elif chosen == act_agent_api:
+            self._toggle_agent_api(act_agent_api.isChecked())
+        elif chosen == act_agent_token:
+            self._copy_agent_api_token()
         elif chosen in lang_actions:
             self._change_language(lang_actions[chosen])
+
+    # ── Agent API ─────────────────────────────────────────────────────────────
+
+    def _start_agent_api(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        from app.api.server import AgentApi
+
+        try:
+            api = AgentApi()
+            api.start()
+            if not api.wait_started():
+                api.stop()
+                raise RuntimeError(
+                    self.tr("Port {0} may be in use by another program.").format(api.port)
+                )
+        except Exception as exc:
+            self.agent_api = None
+            QMessageBox.warning(
+                self, self.tr("Agent API"), self.tr("The Agent API did not start: {0}").format(exc)
+            )
+            return False
+        self.agent_api = api
+        return True
+
+    def _stop_agent_api(self):
+        if self.agent_api is not None:
+            self.agent_api.stop()
+            self.agent_api = None
+
+    def _toggle_agent_api(self, enabled):
+        from PySide6.QtWidgets import QMessageBox
+
+        if enabled:
+            if self._start_agent_api():
+                settings_service.save_agent_api_enabled(True)
+                QMessageBox.information(
+                    self,
+                    self.tr("Agent API"),
+                    self.tr(
+                        "The Agent API is running on {0}.\n\nAnalyst: {0}/analyst/mcp\nWorker: {0}/worker/mcp\n\n"
+                        "Use Copy Agent API Token to give n8n its token."
+                    ).format(self.agent_api.url),
+                )
+        else:
+            self._stop_agent_api()
+            settings_service.save_agent_api_enabled(False)
+
+    def _copy_agent_api_token(self):
+        from PySide6.QtWidgets import QApplication
+
+        if self.agent_api is not None:
+            QApplication.clipboard().setText(self.agent_api.token)
+
+    def _pending_agent_requests(self):
+        from app.services import agent_requests_service
+
+        try:
+            return agent_requests_service.pending_count()
+        except Exception:
+            return 0
+
+    def _check_agent_requests(self):
+        """Opens Agent Requests by itself when a new request waits, so an
+        operator sees it without looking for it."""
+        pending = self._pending_agent_requests()
+        if pending > self._known_pending_requests:
+            self._show_agent_requests()
+        self._known_pending_requests = pending
+
+    def _show_agent_requests(self):
+        from app.agent_requests_dialog import AgentRequestsDialog
+
+        if self._agent_requests_dialog is None:
+            self._agent_requests_dialog = AgentRequestsDialog(self.current_user, self)
+            self._agent_requests_dialog.finished.connect(
+                lambda _result: setattr(self, "_agent_requests_dialog", None)
+            )
+            self._agent_requests_dialog.show()
+        self._agent_requests_dialog.raise_()
+        self._agent_requests_dialog.activateWindow()
 
     def toggle_theme(self):
         self.dark = not self.dark

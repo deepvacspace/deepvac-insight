@@ -39,6 +39,17 @@ def save_language(code):
     _settings().setValue("ui/language", str(code))
 
 
+# ── Agent API ────────────────────────────────────────────────────────────
+
+
+def load_agent_api_enabled(default=False):
+    return _settings().value("agent_api/enabled", default, type=bool)
+
+
+def save_agent_api_enabled(enabled):
+    _settings().setValue("agent_api/enabled", bool(enabled))
+
+
 # ── Window geometry ──────────────────────────────────────────────────────
 
 

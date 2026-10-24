@@ -202,6 +202,17 @@ def connect_cache(db_path=None):
         # test_profiles_service.py) was running when a monitoring session
         # was saved, if any -- NULL for everything else.
         conn.execute("ALTER TABLE runs ADD COLUMN test_profile TEXT")
+    # Columns of control2-client's run database (RunStore), so its runs can be
+    # imported as-is: identity, epoch span and the self-describing manifest
+    # (channels with units and roles, events, configuration snapshot).
+    for column, column_type in (
+        ("run_uid", "TEXT"),
+        ("start_epoch", "REAL"),
+        ("end_epoch", "REAL"),
+        ("manifest_json", "TEXT"),
+    ):
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {column_type}")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('cache_version', ?)",
