@@ -194,6 +194,26 @@ The token is generated once into `data\agent_api_token`, or set
 `DEEPVAC_AGENT_API_TOKEN`. The server listens on 127.0.0.1 only; n8n in
 Docker Desktop reaches it as `host.docker.internal`.
 
+### Chat with the crew
+
+The round button at the bottom right of the window opens a chat with the
+crew. Messages go to the crew workflow's chat webhook in n8n (default
+`http://localhost:5678/webhook/6c1f0e2a-5d3b-4c8e-9f10-deepvaccrew01/chat`,
+change it with gear menu → **Agent Chat URL…**). The workflow must be
+published in n8n. **New chat** starts a conversation the crew doesn't
+remember.
+
+### Analysis Live tab
+
+The first Analysis tab, **● Live**, follows the experiment running on a PLC
+chamber now: the job since it started (the last 30 minutes when the chamber
+is idle), its stages shaded on the chart, the chamber's state, and KPIs and
+anomalies recomputed every 10 s. With **Save finished jobs as runs** (on by
+default) every job that ends is saved to the run database, so experiments
+started by the agents can be analysed like any other run. **Save as Run**
+saves the current job now. Closed by mistake? Gear menu → **Open Live Tab**.
+It shares its PLC connections with the Agent API.
+
 ### Chamber control: the PLC gate
 
 The worker talks to the chamber PLC directly over its binary protocol

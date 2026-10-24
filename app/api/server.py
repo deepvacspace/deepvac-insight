@@ -311,12 +311,19 @@ class AgentApi:
     """The API server (and the executor of approved requests) in background threads."""
 
     def __init__(
-        self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, execute_requests: bool = True
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        execute_requests: bool = True,
+        links: ChamberLinks | None = None,
     ):
+        """links: PLC connections to use; the desktop app passes the ones its Live tab
+        uses, so a chamber's PLC gets one connection per app, not two."""
         self.host = host
         self.port = port
         self.token = api_token()
-        self.links = ChamberLinks()
+        self._own_links = links is None
+        self.links = links or ChamberLinks()
         self.executor = RequestExecutor(self.links) if execute_requests else None
         app = build_app(self.token, AnalystTools(), WorkerTools(self.links), host)
         self._server = uvicorn.Server(
@@ -352,7 +359,8 @@ class AgentApi:
             self._thread.join(timeout=5)
         if self.executor:
             self.executor.stop()
-        self.links.close()
+        if self._own_links:
+            self.links.close()
 
 
 def start_in_background(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> AgentApi:

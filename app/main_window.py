@@ -63,10 +63,20 @@ class DeepVacDesktop(
         self._chamber_sessions = {}  # chamber id -> ChamberSession, see _connect_chamber()
         self.opc_server = OpcBroadcastServer(self)
         self.collab_server = CollabServer()
+        # PLC connections (protocol "plc" chambers), shared by the Analysis
+        # Live tab and the Agent API so each PLC sees one client from this app
+        from app.api.chambers import ChamberLinks
+
+        self.plc_links = ChamberLinks()
 
         self._build_ui()
+        # chat with the agent crew: floating button at the bottom right
+        from app.agent_chat import AgentChat
+
+        self.agent_chat = AgentChat(self.centralWidget())
 
         self.apply_theme()
+        self._open_live_tab()  # first, so it stays the leftmost Analysis tab
         self.load_runs()
         self._start_collab_host_if_enabled()
 
@@ -182,6 +192,7 @@ class DeepVacDesktop(
             self.opc_server.stop()
         self.collab_server.stop()
         self._stop_agent_api()
+        self.plc_links.close()
         for session in list(self._chamber_sessions.values()):
             session.teardown()
         super().closeEvent(event)
@@ -360,6 +371,8 @@ class DeepVacDesktop(
         act_agent_api.setChecked(self.agent_api is not None)
         act_agent_token = menu.addAction(self.tr("Copy Agent API Token"))
         act_agent_token.setEnabled(self.agent_api is not None)
+        act_agent_chat_url = menu.addAction(self.tr("Agent Chat URL…"))
+        act_live_tab = menu.addAction(self.tr("Open Live Tab"))
 
         btn = self.act_settings_btn
         chosen = menu.exec(btn.mapToGlobal(QPoint(btn.width() + 4, 0)))
@@ -379,8 +392,33 @@ class DeepVacDesktop(
             self._toggle_agent_api(act_agent_api.isChecked())
         elif chosen == act_agent_token:
             self._copy_agent_api_token()
+        elif chosen == act_agent_chat_url:
+            self.agent_chat.configure_url(self)
+        elif chosen == act_live_tab:
+            self._open_live_tab()
+            self._nav_to(2)
         elif chosen in lang_actions:
             self._change_language(lang_actions[chosen])
+
+    # ── Analysis Live tab ─────────────────────────────────────────────────────
+
+    def _open_live_tab(self):
+        from app.live_tab import LIVE_KEY, LiveTabPage
+
+        page = self.editor_area.page_for(LIVE_KEY)
+        if page is None:
+            page = LiveTabPage(self.plc_links, dark=self.dark)
+            page.run_saved.connect(self._on_live_run_saved)
+        self.editor_area.open_run(
+            LIVE_KEY, self.tr("● Live"), page
+        )  # opens, or brings it to the front
+
+    def _on_live_run_saved(self, _key):
+        from app.services import data_service
+
+        self.runs = data_service.load_cached_runs()
+        self.render_runs()
+        self._refresh_dashboard()
 
     # ── Agent API ─────────────────────────────────────────────────────────────
 
@@ -390,7 +428,7 @@ class DeepVacDesktop(
         from app.api.server import AgentApi
 
         try:
-            api = AgentApi()
+            api = AgentApi(links=self.plc_links)
             api.start()
             if not api.wait_started():
                 api.stop()
@@ -957,6 +995,36 @@ class DeepVacDesktop(
             }}
             QLabel#monitorPlaceholder {{
                 color: {c["muted"]}; font-size: 13pt; background: transparent;
+            }}
+            QPushButton#chatBubble {{
+                background: {c["accent"]}; border: none; border-radius: 28px;
+            }}
+            QPushButton#chatBubble:hover {{ background: {c["sel"]}; }}
+            QFrame#chatPanel {{
+                background: {c["panel"]}; border: 1px solid {c["border"]}; border-radius: 12px;
+            }}
+            QFrame#chatHeader {{
+                background: {c["accent"]}; border-top-left-radius: 12px; border-top-right-radius: 12px;
+            }}
+            QLabel#chatTitle {{ color: #ffffff; font-weight: 600; font-size: 11pt; background: transparent; }}
+            QLabel#chatSubtitle {{ color: #e0ecff; font-size: 8pt; background: transparent; }}
+            QPushButton#chatHeaderButton {{
+                background: transparent; color: #ffffff; border: none; padding: 4px 8px;
+            }}
+            QPushButton#chatHeaderButton:hover {{ background: rgba(255, 255, 255, 40); border-radius: 6px; }}
+            QScrollArea#chatScroll, QWidget#chatBody {{ background: {c["panel"]}; }}
+            QFrame#chatFooter {{ background: {c["panel"]}; border-top: 1px solid {c["border"]};
+                border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; }}
+            QLabel#chatUserMsg {{
+                background: {c["accent"]}; color: #ffffff; padding: 8px 11px; border-radius: 10px;
+            }}
+            QLabel#chatAgentMsg {{
+                background: {c["hover"]}; color: {c["text"]}; padding: 8px 11px; border-radius: 10px;
+                border: 1px solid {c["border"]};
+            }}
+            QLabel#chatErrorMsg {{
+                background: transparent; color: #f87171; padding: 8px 11px; border-radius: 10px;
+                border: 1px solid #f87171;
             }}
         """
         self.setStyleSheet(css)

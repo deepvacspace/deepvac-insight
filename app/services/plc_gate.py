@@ -29,6 +29,7 @@ import socket
 import struct
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ PARAM_TYPE_FLAGS = 257  # Qt::UserRole + 1
 LONG_TIME_S = 100 * 3600 - 1  # "until stopped" duration of a manual setpoint
 
 STATUS_NAMES = {1: "idle", 2: "work", 3: "finish", 4: "alarm"}  # status_condition values
+STATUS_WORK = 2
 
 _PLC_SPELLING = {"confirm_alarm": "confrim_alarm", "confirm_finish": "confrim_finish"}
 
@@ -277,6 +279,8 @@ class PlcSnapshot:
     job_finished_at: float | None = None
     user_messages: list[tuple[float, str]] = field(default_factory=list)
     last_error: str = ""
+    job_started_at: float | None = None  # status_condition went to "work" (seen by this connection)
+    job_ended_at: float | None = None  # ... and left it again; None while the job runs
 
     @property
     def status(self) -> str:
@@ -296,6 +300,7 @@ class PlcGateClient:
     CONNECT_TIMEOUT_S = 10.0
     REQUEST_PERIOD_S = 5.0  # "base_params_request_period_sec"
     MAX_MESSAGES = 50
+    HISTORY_SAMPLES = 48 * 3600  # two days at one sample per second
 
     def __init__(self, host: str, port: int, on_sample=None):
         self.host = host
@@ -307,6 +312,7 @@ class PlcGateClient:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._send_lock = threading.Lock()
+        self._history: deque[dict] = deque(maxlen=self.HISTORY_SAMPLES)
 
     # -- lifecycle
 
@@ -359,7 +365,16 @@ class PlcGateClient:
                 s.job_finished_at,
                 list(s.user_messages),
                 s.last_error,
+                s.job_started_at,
+                s.job_ended_at,
             )
+
+    def history(self, since: float | None = None) -> list[dict]:
+        """Samples received ({"timestamp": epoch s, state: value, ...}), oldest first; only newer than `since`."""
+        with self._lock:
+            if since is None:
+                return list(self._history)
+            return [s for s in self._history if s["timestamp"] > since]
 
     # -- commands
 
@@ -447,9 +462,16 @@ class PlcGateClient:
                 s.state_names = payload
             elif code == IN_STATE_VALUES:
                 if s.state_names and len(payload) == len(s.state_names):
+                    was_working = s.values.get("status_condition") == STATUS_WORK
                     s.values = dict(zip(s.state_names, payload, strict=True))
                     s.values_at = now
                     sample = {"timestamp": now, **s.values}
+                    self._history.append(sample)
+                    working = s.values.get("status_condition") == STATUS_WORK
+                    if working and not was_working:
+                        s.job_started_at, s.job_ended_at = now, None
+                    elif was_working and not working:
+                        s.job_ended_at = now
                 elif s.state_names:
                     s.state_names = []  # the PLC changed its state list: ask again
             elif code == IN_SETTINGS_MAP:

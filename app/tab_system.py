@@ -405,6 +405,11 @@ class EditorArea(QWidget):
     def register_chart(self, chart):
         self._sync_hub.register(chart)
 
+    def page_for(self, key):
+        """The page open under `key`, or None."""
+        entry = self._pages.get(key)
+        return entry[0] if entry else None
+
     def open_run(self, key, run_id, page):
         if key in self._pages:
             _, grp = self._pages[key]

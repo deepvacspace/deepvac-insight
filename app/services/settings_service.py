@@ -50,6 +50,29 @@ def save_agent_api_enabled(enabled):
     _settings().setValue("agent_api/enabled", bool(enabled))
 
 
+# the n8n crew's chat webhook (workflow "DeepVac Crew", Chat node)
+DEFAULT_AGENT_CHAT_URL = "http://localhost:5678/webhook/6c1f0e2a-5d3b-4c8e-9f10-deepvaccrew01/chat"
+
+
+def load_agent_chat_url(default=DEFAULT_AGENT_CHAT_URL):
+    return _settings().value("agent_api/chat_url", default) or default
+
+
+def save_agent_chat_url(url):
+    _settings().setValue("agent_api/chat_url", str(url).strip())
+
+
+# ── Analysis Live tab ────────────────────────────────────────────────────
+
+
+def load_live_autosave(default=True):
+    return _settings().value("live/autosave", default, type=bool)
+
+
+def save_live_autosave(enabled):
+    _settings().setValue("live/autosave", bool(enabled))
+
+
 # ── Window geometry ──────────────────────────────────────────────────────
 
 
