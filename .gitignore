@@ -22,6 +22,10 @@ build/
 dist/
 *.spec.bak
 
+# Lint / type-check caches
+.ruff_cache/
+.mypy_cache/
+
 # pytest / coverage output
 .pytest_cache/
 .coverage
@@ -36,3 +40,5 @@ installer/output/
 .claude/
 DEV_GUIDE.md
 CONTRIBUTING.md
+
+docs/

@@ -77,6 +77,71 @@ data\deepvac_runs.sqlite3
 
 Generated reports are written to `data\reports\`.
 
+Each run's samples are stored as JSON text (`runs.samples_json`), about
+340 bytes per sample. The run database holds experiments; everything a
+chamber sends, all day, goes to the full-day recordings below.
+
+## Full-day recordings
+
+Every sample of every chamber, experiment or not, one Apache Parquet file
+per chamber and day (`app/services/day_recorder.py`):
+
+```text
+data\recordings\<chamber>\YYYY-MM-DD.parquet
+```
+
+On by default (gear menu → **Record Chambers All Day**; **Open Recordings
+Folder**). PLC chambers are read from their connections, sample-feed
+chambers from their sessions while connected. The day is kept in memory
+and its file rewritten every minute and on closing (Parquet files can't be
+appended to); a restart continues the day from its file.
+
+The format, "deepvac.recording/1", is the one DeepVac Control writes since
+it replaced its daily `.dat` files (control2-client
+`src/storage/recordingfile.h`), so each application reads the other's files:
+
+| Column / key | |
+|---|---|
+| `timestamp` | TIMESTAMP(MICROS, UTC), not null |
+| one per channel | DOUBLE, not null; a gap is NaN |
+| footer | `deepvac.format`, `deepvac.day`, `deepvac.chamber`, `deepvac.channels` (JSON: name, label, unit), `deepvac.source` |
+
+Written with GZIP (level 6), PLAIN encoding (no dictionary) and data pages
+v1: the subset DeepVac Control's own reader takes. pandas, pyarrow and
+DuckDB read the files directly, e.g.
+`duckdb.sql("SELECT avg(temp) FROM 'data/recordings/*/2026-10-24.parquet'")`.
+The analyst reads them with `list_recordings` and `get_recording`.
+
+`scripts/estimate_storage.py` measures a folder of DeepVac Control `.dat`
+days in several storage layouts and projects a year of continuous 1 Hz
+recording (34 days, 32 or 44 channels):
+
+| Layout | Bytes / sample | GB / year (worst day) |
+|---|---|---|
+| `.dat` (8-byte doubles) | 264–360 | 8.3 (11.4) |
+| JSON rows, as the run database stores them | 641 | 20.2 (24.8) |
+| SQLite, one REAL column per channel | 147 | 4.6 (5.7) |
+| JSON + zlib | 16 | 0.5 (1.7) |
+| zlib float64 column per channel | 6 | 0.19 (0.59) |
+| **Parquet, as recorded now** | **9.5** | **0.30 (0.68)** |
+
+## Analysis Export menu
+
+Each run tab in Analysis has DeepVac Control's Export menu
+(`app/services/run_export.py`, the same files the analyst agent exports):
+
+- **Chart image**: the chart as shown, PNG, BMP or JPEG.
+- **Data**: the whole experiment or the visible range, CSV or TXT (tab
+  separated): Time, Elapsed and every channel.
+- **Comparison CSV**: this run and the runs compared with it, one row each
+  with the compared channel's min, max, mean and final value.
+- **Experiment report**: HTML or PDF, with the chart as shown (or the
+  comparison) first.
+- **Experiment bundle**: JSON with the manifest, analysis, samples,
+  annotations and rules.
+
+The file browser opens in `data\reports\`, named after the run.
+
 ## Cloud authentication (optional)
 
 The app runs fully offline and never requires authentication to start.
@@ -187,8 +252,25 @@ n8n) calls. Two endpoints, one bearer token:
 
 | Endpoint | For | Tools |
 |---|---|---|
-| `http://127.0.0.1:8765/analyst/mcp` | Analyst | list / rank runs, run summary, stages, KPIs, statistics, anomalies, compare runs, channels, events, CSV export, PID simulation on the GRU twin. Read-only. |
+| `http://127.0.0.1:8765/analyst/mcp` | Analyst | list / rank runs, run summary, stages, KPIs, statistics, anomalies, compare runs, channels, events, PID simulation on the GRU twin, full-day recordings (list_recordings, get_recording), and exports (below). Read-only. |
 | `http://127.0.0.1:8765/worker/mcp` | Worker | chambers, live status, PLC settings, programs; requests to set a temperature, run a program or stop |
+
+The analyst's exports copy DeepVac Control's Export menu
+(`app/services/run_export.py`) and write into the reports folder
+(`data\reports`):
+
+| Tool | Writes |
+|---|---|
+| `export_chart` | Chart image, PNG / BMP / JPEG, 1600 × 700. The temperature chart (stages shaded, anomalies marked), the control chart (output and P / I / D terms), chosen channels or a time range, or several runs overlaid on one channel. |
+| `export_report` | Experiment report, PDF (A4 landscape) or HTML (charts embedded), with the sections of DeepVac Control's report; optionally a comparison with other runs. |
+| `export_data` | Samples, CSV or TXT (tab separated): Time, Elapsed and each channel; whole run or a time range. |
+| `export_comparison` | Comparison CSV: one row per run with a channel's min, max, mean and final value. |
+| `export_bundle` | Experiment bundle (JSON): manifest, analysis, samples, annotations and rules. |
+
+Each returns the file's path and a `file://` link. When an answer links to a
+chart image, the chat shows it as a thumbnail; a click opens the file. Charts
+and PDFs are painted with Qt, so `python -m app.api` makes an offscreen
+`QGuiApplication` for them.
 
 **Only a person approves.** The worker's `request_*` tools never change a
 chamber: they create a request in `data\deepvac_agent_requests.sqlite3`. The

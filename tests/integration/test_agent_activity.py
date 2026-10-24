@@ -72,3 +72,15 @@ def test_request_tools_name_their_request_and_the_chat_can_follow_it(deepvac_dat
     assert [(r["id"], r["status"], r["decision_comment"]) for r in found] == [
         (request["id"], "rejected", "not now")
     ]
+
+
+def test_exports_are_described():
+    assert activity.describe("export_report", {"run": "#12"}) == "writing the PDF report of run #12"
+    assert (
+        activity.describe("export_chart", {"run": "#12", "compare_with": ["#13"]})
+        == "drawing a chart comparing run #12 with #13"
+    )
+    assert (
+        activity.describe("export_data", {"run": "#3", "format": "txt"})
+        == "exporting run #3 to TXT"
+    )

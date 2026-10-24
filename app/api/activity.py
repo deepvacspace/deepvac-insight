@@ -51,7 +51,27 @@ def describe(tool: str, args: dict) -> str:
         "compare_runs": lambda: "comparing runs " + ", ".join(str(r) for r in a.get("runs") or []),
         "list_channels": lambda: f"listing the channels of {_runs(a)}",
         "get_events": lambda: f"reading the events of {_runs(a)}",
-        "export_data": lambda: f"exporting {_runs(a)} to CSV",
+        "export_data": lambda: f"exporting {_runs(a)} to {a.get('format', 'csv').upper()}",
+        "export_chart": lambda: (
+            f"drawing a chart comparing {_runs(a)} with {', '.join(map(str, a['compare_with']))}"
+            if a.get("compare_with")
+            else f"drawing the {a.get('kind', 'temperature')} chart of {_runs(a)}"
+        ),
+        "export_report": lambda: (
+            f"writing the {a.get('format', 'pdf').upper()} report of {_runs(a)}"
+        ),
+        "export_comparison": lambda: (
+            "writing a comparison CSV of runs " + ", ".join(str(r) for r in a.get("runs") or [])
+        ),
+        "export_bundle": lambda: f"exporting the bundle of {_runs(a)}",
+        "list_recordings": lambda: (
+            "listing the recorded days" + (f" of {a['chamber']}" if a.get("chamber") else "")
+        ),
+        "get_recording": lambda: (
+            f"reading the recording of {a.get('chamber') or 'the chamber'}"
+            + (f" from {a['start']}" if a.get("start") else " today")
+            + (f" to {a['end']}" if a.get("end") else "")
+        ),
         "simulate_pid": lambda: (
             f"simulating Kp {a.get('kp')}, Ki {a.get('ki')}, Kd {a.get('kd')} "
             f"to {a.get('target_c')} °C on the digital twin"

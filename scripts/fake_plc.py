@@ -57,9 +57,10 @@ SETTINGS = {
     "t_delay_23": 30.0,
     "temp_cool_duty": 0.3,
     "teh_duty": 1.0,
-    "p1_p_0": 5.0,
-    "p1_i_0": 600.0,
-    "p1_d_0": 6.0,
+    # PID tables: <loop>p<band>, <loop>i<band>, <loop>d<band>, as the PLC and control2-client name them
+    "p1p0": 5.0,
+    "p1i0": 600.0,
+    "p1d0": 6.0,
 }
 CONTROL_PARAMS = [
     {"name": "duration", "type": 256},

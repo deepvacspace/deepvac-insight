@@ -50,6 +50,15 @@ def save_agent_api_enabled(enabled):
     _settings().setValue("agent_api/enabled", bool(enabled))
 
 
+def load_day_recording_enabled(default=True):
+    """Record every chamber's samples all day (app/services/day_recorder.py)."""
+    return _settings().value("day_recording/enabled", default, type=bool)
+
+
+def save_day_recording_enabled(enabled):
+    _settings().setValue("day_recording/enabled", bool(enabled))
+
+
 # the n8n crew's chat webhook (workflow "DeepVac Crew", Chat node)
 DEFAULT_AGENT_CHAT_URL = "http://localhost:5678/webhook/6c1f0e2a-5d3b-4c8e-9f10-deepvaccrew01/chat"
 

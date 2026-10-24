@@ -22,14 +22,20 @@ feed names them) through GET /requests: when one is decided, sent, or its
 job ends, a notice appears here and, unless the crew already saw that state
 through its own tools, the chat sends the crew an update in the same session
 (UPDATE_PREFIX), so the Professor can tell the user what came of it.
+
+Chart images the analyst exported (export_chart) and the answer links to are
+shown under it as thumbnails; a click opens the file.
 """
 
 import json
+import re
 import time
 import uuid
 from collections import OrderedDict
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QFrame,
@@ -60,6 +66,28 @@ ANSWER_NODE = (
 )
 AGENT_LABELS = {"Professor": "Professor", "analyst": "Analyst", "worker": "Worker"}
 MARKS = {"running": "…", "done": "✓", "error": "✗"}
+# local image files an answer links to: file:///C:/... or C:\...
+IMAGE_LINK = re.compile(
+    r"(file:///[^\s)\]>\"']+?\.(?:png|jpe?g|bmp)|[A-Za-z]:[\\/][^\n)\]>\"']+?\.(?:png|jpe?g|bmp))",
+    re.IGNORECASE,
+)
+MAX_THUMBNAILS = 4
+
+
+class ImageThumbnail(QLabel):
+    """A chart image in the chat; a click opens the file."""
+
+    def __init__(self, path: Path, width: int, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.setObjectName("chatImage")
+        self.setPixmap(QPixmap(str(path)).scaledToWidth(width, Qt.SmoothTransformation))
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(str(path))
+
+    def mousePressEvent(self, event):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.path)))
+        super().mousePressEvent(event)
 
 
 class AgentChatPanel(QFrame):
@@ -282,6 +310,7 @@ class AgentChatPanel(QFrame):
             if self._streamed and ok:
                 if not self._answer_text:
                     self._add_message("agent", self.tr("(The crew sent an empty answer.)"))
+                self.show_images(self._answer_text)
             else:
                 raw = self._raw.decode("utf-8", errors="replace")
                 self.show_reply(ok, status, raw, reply.errorString())
@@ -298,6 +327,7 @@ class AgentChatPanel(QFrame):
                 data = data[0]
             text = data.get("output") if isinstance(data, dict) else None
             self._add_message("agent", text or self.tr("(The crew sent an empty answer.)"))
+            self.show_images(text or "")
             return
         if status == 404:
             hint = self.tr(
@@ -325,16 +355,20 @@ class AgentChatPanel(QFrame):
             self._tick_timer.start(ACTIVITY_POLL_MS)
             return
         self._tick_timer.stop()
+        self._render_progress()
         self._wrap_up = True
         if self._activity_reply is None:
-            self._poll_activity()  # its answer (or none) leads to _maybe_send_update
+            self._poll_activity()  # its answer (or none) closes the summary, then _maybe_send_update
+
+    def _close_summary(self):
+        """The steps stay above the answer as a summary, once the last activity is in."""
         if self._progress_label is None:
             return
         if self._progress:
             for entry in self._progress.values():
                 if entry["status"] == "running":
                     entry["status"] = "done"
-            self._render_progress()  # stays above the answer as a summary of the steps
+            self._render_progress()
         else:
             self._progress_label.parentWidget().deleteLater()
         self._progress_label = None
@@ -407,6 +441,7 @@ class AgentChatPanel(QFrame):
         if self._wrap_up:
             self._wrap_up = False
             self._final_activity = None
+            self._close_summary()
             self._maybe_send_update()
 
     def show_activity(self, events):
@@ -501,6 +536,31 @@ class AgentChatPanel(QFrame):
             lines.append("Tell the user briefly what this means for what they asked.")
             self._post("\n".join(lines))
 
+    def show_images(self, text):
+        """Thumbnails of the local images an answer links to (separate for tests)."""
+        shown = []
+        for match in IMAGE_LINK.findall(text or ""):
+            link = match.strip()
+            path = (
+                Path(QUrl(link).toLocalFile()) if link.lower().startswith("file:") else Path(link)
+            )
+            if path in shown or not path.is_file():
+                continue
+            shown.append(path)
+            thumbnail = ImageThumbnail(path, int(PANEL_SIZE.width() * 0.82))
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(thumbnail)
+            row.addStretch(1)
+            holder = QWidget()
+            holder.setLayout(row)
+            self._messages.addWidget(holder)
+            if len(shown) == MAX_THUMBNAILS:
+                break
+        if shown:
+            QTimer.singleShot(0, self._scroll_to_end)
+        return shown
+
     # ── messages ─────────────────────────────────────────────────────────────
 
     def _add_message(self, role, text):
@@ -548,7 +608,9 @@ class AgentChatPanel(QFrame):
         for i in range(1, self._messages.count()):
             holder = self._messages.itemAt(i).widget()
             label = holder.findChild(QLabel) if holder else None
-            if label:
+            if isinstance(label, ImageThumbnail):
+                result.append(("image", str(label.path)))
+            elif label:
                 result.append((roles.get(label.objectName(), "error"), label.text()))
         return result
 

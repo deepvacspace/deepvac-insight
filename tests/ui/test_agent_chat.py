@@ -234,3 +234,28 @@ def test_tells_the_crew_what_became_of_its_requests(chat, qtbot, crew_webhook, m
     qtbot.waitUntil(lambda: panel._reply is None, timeout=5000)
     notices = [text for role, text in panel.messages() if role == "notice"]
     assert len(notices) == 2 and notices[1].startswith("Insight · Request 7")
+
+
+def test_exported_charts_show_as_thumbnails(chat, tmp_path):
+    from PySide6.QtGui import QColor, QImage
+
+    from app.agent_chat import ImageThumbnail
+
+    image = QImage(800, 350, QImage.Format_RGB32)
+    image.fill(QColor("#2563eb"))
+    path = tmp_path / "My charts" / "run12_chart.png"
+    path.parent.mkdir()
+    image.save(str(path))
+    panel = chat.panel
+    answer = (
+        f"Here is [the chart of #12]({path.as_uri()}) and the [report]({(tmp_path / 'r.pdf').as_uri()}); "
+        f"again {path.as_uri()} and a missing {(tmp_path / 'gone.png').as_uri()}"
+    )
+    panel.show_reply(True, 200, json.dumps({"output": answer}))
+    assert panel.messages()[-1] == (
+        "image",
+        str(path),
+    )  # once, the pdf and the missing file skipped
+    assert [r for r, _ in panel.messages()].count("image") == 1
+    thumb = panel.findChildren(ImageThumbnail)[0]
+    assert thumb.pixmap().width() == int(400 * 0.82)

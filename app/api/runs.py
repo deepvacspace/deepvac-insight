@@ -18,7 +18,7 @@ from app.core.analysis.anomalies import LimitRule
 from app.core.analysis.common import NaN
 from app.core.analysis.experimentanalysis import ExperimentInput
 from app.core.analysis.runsamples import columns_from_rows
-from app.services import annotations_service, data_service
+from app.services import annotations_service, data_service, run_export
 
 CATALOGUE_COLUMNS = (
     "key, id, group_name, source, chamber, test_profile, start_time, end_time, samples, duration_s, "
@@ -116,32 +116,27 @@ class RunCatalogue:
         finally:
             conn.close()
         rows = sorted(_without_duplicates(rows), key=lambda r: (_start_epoch(r), r["key"]))
-        entries = [
-            CatalogueEntry(
-                number=i + 1,
-                key=r["key"],
-                name=r["id"],
-                group=r["group_name"],
-                source=r["source"],
-                chamber=r["chamber"],
-                test_profile=r["test_profile"],
-                start_time=r["start_time"] or "",
-                end_time=r["end_time"] or "",
-                start_epoch=_start_epoch(r),
-                samples=r["samples"],
-                duration_s=r["duration_s"],
-                mae=r["mae"],
-                cost=r["cost"],
-                tail_mae=r["tail_mae"],
-                overshoot=r["overshoot"],
-                settle_time_s=r["settle_time_s"],
-            )
-            for i, r in enumerate(rows)
-        ]
+        entries = [_entry(i + 1, r) for i, r in enumerate(rows)]
         with self._lock:
             self._entries, self._signature = entries, signature
             self._analyses.clear()
         return entries
+
+    def entry_for_key(self, key: str) -> CatalogueEntry:
+        """The run with this database key; a folder copy hidden from the numbering gets number 0."""
+        for entry in self.entries():
+            if entry.key == key:
+                return entry
+        conn = data_service.connect_cache()
+        try:
+            row = conn.execute(
+                f"SELECT {CATALOGUE_COLUMNS} FROM runs WHERE key = ?", (key,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise RunReferenceError(f"Run {key} is not in the database.")
+        return _entry(0, row)
 
     def resolve(self, reference: str) -> CatalogueEntry:
         entries = self.entries()
@@ -226,3 +221,69 @@ class RunCatalogue:
             return json.loads(row["manifest_json"])
         except ValueError:
             return None
+
+    def export_run(
+        self, entry: CatalogueEntry, with_samples: bool = False, title: str | None = None
+    ) -> run_export.RunExport:
+        """Everything run_export needs for this run (with_samples: the stored rows, for a bundle)."""
+        from app.api import control_settings
+
+        data, a = self.load(entry)
+        manifest = self.manifest(entry)
+        states = control_settings.state_meta(control_settings.load())
+        described = {c["name"]: c for c in (manifest or {}).get("channels", []) if "name" in c}
+        labels, units = {}, {}
+        for name in data.channels:
+            meta = described.get(name) or {}
+            fallback = states.get(name, {})
+            labels[name] = meta.get("label") or fallback.get("label") or name
+            units[name] = meta.get("unit") or fallback.get("unit") or ""
+        summary = samples = None
+        if with_samples:
+            conn = data_service.connect_cache()
+            try:
+                row = conn.execute(
+                    "SELECT summary_json, samples_json FROM runs WHERE key = ?", (entry.key,)
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is not None:
+                summary = json.loads(row["summary_json"] or "{}")
+                samples = json.loads(row["samples_json"] or "[]")
+        return run_export.RunExport(
+            title=title or (f"{entry.ref} {entry.name}" if entry.number else entry.name),
+            start_epoch=entry.start_epoch,
+            times=data.times,
+            channels=data.channels,
+            analysis=a,
+            manifest=manifest,
+            labels=labels,
+            units=units,
+            chamber=entry.chamber or "",
+            annotations=annotations_service.list_annotations(entry.key),
+            rules=annotations_service.list_rules(entry.key),
+            summary=summary,
+            samples=samples,
+        )
+
+
+def _entry(number: int, r) -> CatalogueEntry:
+    return CatalogueEntry(
+        number=number,
+        key=r["key"],
+        name=r["id"],
+        group=r["group_name"],
+        source=r["source"],
+        chamber=r["chamber"],
+        test_profile=r["test_profile"],
+        start_time=r["start_time"] or "",
+        end_time=r["end_time"] or "",
+        start_epoch=_start_epoch(r),
+        samples=r["samples"],
+        duration_s=r["duration_s"],
+        mae=r["mae"],
+        cost=r["cost"],
+        tail_mae=r["tail_mae"],
+        overshoot=r["overshoot"],
+        settle_time_s=r["settle_time_s"],
+    )

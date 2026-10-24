@@ -72,6 +72,9 @@ def test_translation_initialization_does_not_crash_for_es_and_de(qapp):
     # either bundled translation.
     from app.services import i18n_service
 
-    for code in ("en", "es", "de"):
-        installed = i18n_service.install_language(qapp, code)
-        assert installed == (code != "en")  # "en" needs no .qm, es/de do
+    try:
+        for code in ("en", "es", "de"):
+            installed = i18n_service.install_language(qapp, code)
+            assert installed == (code != "en")  # "en" needs no .qm, es/de do
+    finally:
+        i18n_service.install_language(qapp, "en")  # later tests read English texts

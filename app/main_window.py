@@ -65,6 +65,11 @@ class DeepVacDesktop(
         from app.api.chambers import ChamberLinks
 
         self.plc_links = ChamberLinks()
+        # full-day recording of every chamber (data/recordings, Parquet, app/services/day_recorder.py)
+        self.day_recorder = None
+        self._recording_feed = None
+        if settings_service.load_day_recording_enabled():
+            self._start_day_recording()
 
         self._build_ui()
         # chat with the agent crew: floating button at the bottom right
@@ -128,6 +133,9 @@ class DeepVacDesktop(
         session.disconnected.connect(self._recompute_chamber_aggregate_status)
         session.sample_received.connect(
             lambda sample, s=session: self.opc_server.broadcast(s.chamber["name"], sample)
+        )
+        session.sample_received.connect(
+            lambda sample, s=session: self._record_sample(s.chamber["name"], sample)
         )
         session.manual_state_changed.connect(
             lambda s=session: self._on_controller_session_changed(s)
@@ -195,6 +203,7 @@ class DeepVacDesktop(
             self.opc_server.stop()
         self.collab_server.stop()
         self._stop_agent_api()
+        self._stop_day_recording()
         self.plc_links.close()
         for session in list(self._chamber_sessions.values()):
             session.teardown()
@@ -379,6 +388,12 @@ class DeepVacDesktop(
         act_agent_chat_url = menu.addAction(self.tr("Agent Chat URL…"))
         act_live_tab = menu.addAction(self.tr("Open Live Tab"))
 
+        menu.addSeparator()
+        act_recording = menu.addAction(self.tr("Record Chambers All Day"))
+        act_recording.setCheckable(True)
+        act_recording.setChecked(self.day_recorder is not None)
+        act_recordings_folder = menu.addAction(self.tr("Open Recordings Folder"))
+
         btn = self.act_settings_btn
         chosen = menu.exec(btn.mapToGlobal(QPoint(btn.width() + 4, 0)))
         if chosen == act_dark and not self.dark:
@@ -402,8 +417,58 @@ class DeepVacDesktop(
         elif chosen == act_live_tab:
             self._open_live_tab()
             self._nav_to(2)
+        elif chosen == act_recording:
+            self._toggle_day_recording(act_recording.isChecked())
+        elif chosen == act_recordings_folder:
+            self._open_recordings_folder()
         elif chosen in lang_actions:
             self._change_language(lang_actions[chosen])
+
+    # ── Full-day recording ───────────────────────────────────────────────────
+
+    def _start_day_recording(self):
+        from app.services.day_recorder import DayRecorder, RecordingFeed
+
+        self.day_recorder = DayRecorder(labels=self._recording_labels)
+        self._recording_feed = RecordingFeed(self.plc_links, self.day_recorder)
+        self._recording_feed.start()
+
+    def _stop_day_recording(self):
+        if self._recording_feed is not None:
+            self._recording_feed.stop()  # writes what is not on disk yet
+        self.day_recorder = None
+        self._recording_feed = None
+
+    def _toggle_day_recording(self, enabled):
+        if enabled and self.day_recorder is None:
+            self._start_day_recording()
+        elif not enabled:
+            self._stop_day_recording()
+        settings_service.save_day_recording_enabled(enabled)
+
+    def _record_sample(self, chamber_name, sample):
+        if self.day_recorder is not None:
+            self.day_recorder.add(chamber_name, sample)
+
+    @staticmethod
+    def _recording_labels(chamber_name):
+        """Channel descriptions for a day file's footer: the PLC's value list."""
+        from app.api import control_settings
+
+        try:
+            return control_settings.state_meta(control_settings.load())
+        except Exception:
+            return {}
+
+    def _open_recordings_folder(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from app.services import day_recorder
+
+        folder = day_recorder.recordings_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     # ── Analysis Live tab ─────────────────────────────────────────────────────
 

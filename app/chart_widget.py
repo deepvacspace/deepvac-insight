@@ -4,6 +4,7 @@ import contextlib
 
 import numpy as np
 import pyqtgraph as pg
+import pyqtgraph.exporters  # noqa: F401 (pg.exporters is not imported with pyqtgraph)
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (

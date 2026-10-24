@@ -22,6 +22,7 @@ import inspect
 import json
 import logging
 import os
+import sys
 import threading
 
 import uvicorn
@@ -187,9 +188,62 @@ def build_analyst_server(tools: AnalystTools) -> MCPServer:
         channels: list[str] | None = None,
         from_s: float | None = None,
         to_s: float | None = None,
+        format: str = "csv",
     ) -> dict:
-        """Write a run's samples (selected channels and time range) to a CSV file in Insight's reports folder."""
-        return tools.export_data(run, channels, from_s, to_s)
+        """Write a run's samples (selected channels and time range) to a file in Insight's reports folder:
+        format csv, or txt (tab separated). Returns the file path and a file:// link."""
+        return tools.export_data(run, channels, from_s, to_s, format)
+
+    @expose(mcp, READ_ONLY)
+    def export_chart(
+        run: str,
+        kind: str = "temperature",
+        channels: list[str] | None = None,
+        from_s: float | None = None,
+        to_s: float | None = None,
+        format: str = "png",
+        compare_with: list[str] | None = None,
+    ) -> dict:
+        """Save a chart of a run as an image (format png, bmp or jpg) in Insight's reports folder.
+        kind 'temperature' (temperature and setpoint, stages shaded, anomalies marked) or 'control' (output
+        and its P / I / D terms), or give channels; from_s / to_s zoom on a time range. compare_with: other
+        runs to overlay on one channel (channels[0], default temp), aligned on their start.
+        Returns the file path and a file:// link to give the user."""
+        return tools.export_chart(run, kind, channels, from_s, to_s, format, compare_with)
+
+    @expose(mcp, READ_ONLY)
+    def export_report(run: str, format: str = "pdf", compare_with: list[str] | None = None) -> dict:
+        """Write an experiment report of a run (format pdf or html) as DeepVac Control makes it: summary,
+        details, control KPIs, configuration, charts, stages, steady states, anomalies, events, notes;
+        with compare_with, also a comparison against those runs. Returns the file path and a file:// link."""
+        return tools.export_report(run, format, compare_with)
+
+    @expose(mcp, READ_ONLY)
+    def export_comparison(runs: list[str], channel: str = "temp") -> dict:
+        """Write a comparison CSV: one row per run with start, end, duration, samples and the min, max, mean
+        and final value of a channel. Returns the file path and a file:// link."""
+        return tools.export_comparison(runs, channel)
+
+    @expose(mcp, READ_ONLY)
+    def export_bundle(run: str) -> dict:
+        """Write a run's experiment bundle (JSON: manifest, analysis, samples, annotations and rules), to
+        archive it or move it to another installation. Returns the file path and a file:// link."""
+        return tools.export_bundle(run)
+
+    @expose(mcp, READ_ONLY)
+    def list_recordings(chamber: str = "") -> dict:
+        """Days of full-day recording (every sample a chamber sent, whether or not an experiment ran), per
+        chamber, with their sample counts. The last 60 days."""
+        return tools.list_recordings(chamber)
+
+    @expose(mcp, READ_ONLY)
+    def get_recording(
+        chamber: str = "", start: str = "", end: str = "", channels: list[str] | None = None
+    ) -> dict:
+        """What a chamber did in a time range, from its full-day recording: per channel min, max, mean, first
+        and last value, the status and setpoint changes, and gaps (the application not connected).
+        start / end: local time "YYYY-MM-DD" (a whole day) or "YYYY-MM-DD HH:MM"; empty: today so far."""
+        return tools.get_recording(chamber, start, end, channels)
 
     @expose(mcp, READ_ONLY)
     def simulate_pid(
@@ -414,6 +468,21 @@ def start_in_background(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> A
     return api
 
 
+def ensure_gui():
+    """The analyst's chart images and PDF reports paint with Qt, which needs a QGuiApplication: the
+    desktop app has one; headless, make an offscreen one (here, in the main thread)."""
+    from PySide6.QtGui import QGuiApplication
+
+    app = QGuiApplication.instance()
+    if app is None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        if sys.platform == "win32":  # the offscreen platform looks for fonts here only
+            fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+            os.environ.setdefault("QT_QPA_FONTDIR", fonts)
+        app = QGuiApplication(["deepvac-agent-api"])
+    return app
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
         description="DeepVac agent API (MCP): analyst and worker endpoints."
@@ -439,6 +508,7 @@ def main(argv=None) -> None:
     if args.show_token:
         print(api_token())
         return
+    gui = ensure_gui()  # noqa: F841 (kept alive while the API runs)
     api = AgentApi(args.host, args.port, execute_requests=not args.no_execute)
     api.start()
     if not api.wait_started():

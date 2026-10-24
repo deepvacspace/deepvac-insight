@@ -1,11 +1,17 @@
-"""Analysis tab page (RunTabPage) shown for each opened run, plus SimWorker."""
+"""Analysis tab page (RunTabPage) shown for each opened run, plus SimWorker.
+
+Its Export menu has DeepVac Control's export options (app/services/run_export.py,
+shared with the analyst agent): chart image, data, comparison CSV, experiment
+report and experiment bundle.
+"""
 
 import contextlib
-import csv
+from pathlib import Path
 
-from PySide6.QtCore import QSize, QThread, Signal
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtCore import QSize, Qt, QThread, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -29,8 +35,10 @@ import app.services.annotations_service as annotations_service
 import app.services.data_service as data
 import app.services.derived_variables_service as derived_variables_service
 import app.services.settings_service as settings_service
+from app import common
 from app.chart_widget import ChartWidget
-from app.common import COLORS, RULE_COLOR_OPTIONS, _svg_icon, csv_escape, fmt
+from app.common import COLORS, RULE_COLOR_OPTIONS, _svg_icon, fmt
+from app.services import run_export
 
 
 class SimWorker(QThread):
@@ -70,6 +78,7 @@ class RunTabPage(QWidget):
         self._rules_list_layout = None
         self._derived_variables = []  # every definition, regardless of availability for this run
         self._available_derived = []  # subset computable from this run's numeric_columns
+        self._catalogue = None  # app.api.runs.RunCatalogue, for the exports
         self._build_ui()
 
     # ── UI construction ───────────────────────────────────────────────────────
@@ -141,16 +150,7 @@ class RunTabPage(QWidget):
         download.setIcon(_svg_icon("download", "#ffffff", 14))
         download.setIconSize(QSize(14, 14))
         download.setObjectName("primaryButton")
-        dl_menu = QMenu(download)
-        for label, slot in [
-            (self.tr("Chart PNG"), self.export_chart_png),
-            (self.tr("Run CSV"), self.export_run_csv),
-            (self.tr("Comparison CSV"), self.export_comparison_csv),
-        ]:
-            act = QAction(label, dl_menu)
-            act.triggered.connect(slot)
-            dl_menu.addAction(act)
-        download.setMenu(dl_menu)
+        download.setMenu(self._build_export_menu(download))
 
         for w in [
             self._ch_btn,
@@ -858,45 +858,148 @@ class RunTabPage(QWidget):
                     hi, self.tr("{0} max").format(name), color, overlay=True
                 )
 
-    # ── Exports ──────────────────────────────────────────────────────────────
+    # ── Exports (DeepVac Control's Export menu) ─────────────────────────────
 
-    def export_chart_png(self):
-        if not self.detail:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, self.tr("Save chart"), f"{self.detail['run']['id']}.png", self.tr("PNG (*.png)")
+    def _build_export_menu(self, parent):
+        menu = QMenu(parent)
+        images = menu.addMenu(self.tr("Chart image"))
+        for label, fmt_ in (
+            (self.tr("PNG…"), "png"),
+            (self.tr("BMP…"), "bmp"),
+            (self.tr("JPEG…"), "jpg"),
+        ):
+            images.addAction(label, lambda *_, f=fmt_: self.export_chart_image(f))
+        data_menu = menu.addMenu(self.tr("Data"))
+        data_menu.addAction(
+            self.tr("Whole experiment (CSV)…"), lambda *_: self.export_run_data(False, False)
         )
-        if path:
-            self.chart.export_view(path)
+        data_menu.addAction(
+            self.tr("Whole experiment (TXT)…"), lambda *_: self.export_run_data(False, True)
+        )
+        data_menu.addSeparator()
+        data_menu.addAction(
+            self.tr("Visible range (CSV)…"), lambda *_: self.export_run_data(True, False)
+        )
+        data_menu.addAction(
+            self.tr("Visible range (TXT)…"), lambda *_: self.export_run_data(True, True)
+        )
+        menu.addAction(self.tr("Comparison CSV…"), lambda *_: self.export_comparison_csv())
+        menu.addSeparator()
+        menu.addAction(self.tr("Experiment report (HTML)…"), lambda *_: self.export_report("html"))
+        menu.addAction(self.tr("Experiment report (PDF)…"), lambda *_: self.export_report("pdf"))
+        menu.addSeparator()
+        menu.addAction(self.tr("Experiment bundle (JSON)…"), lambda *_: self.export_bundle())
+        return menu
 
-    def export_run_csv(self):
-        if not self.detail:
-            return
-        table = data.run_table(self.run_key)
+    def _export_target(self, key, with_samples=False):
+        from app.api.runs import RunCatalogue
+
+        if self._catalogue is None:
+            self._catalogue = RunCatalogue()
+        entry = self._catalogue.entry_for_key(key)
+        return self._catalogue.export_run(entry, with_samples, title=entry.name)
+
+    def _compared_keys(self):
+        """This run first, then the runs compared with it."""
+        return [self.run_key, *sorted(k for k in self.compare_runs if k != self.run_key)]
+
+    def _compared_channel(self):
+        if self._compare_mode() and isinstance(self.series, dict) and self.series.get("channel"):
+            return self.series["channel"]
+        return self._first_col() or "temp"
+
+    def _ask_export_path(self, extension, suffix=""):
+        """File browser in the reports folder, named after the run (AnalysisRunPage::askExportPath)."""
+        name = run_export.safe_name((self.detail or {}).get("run", {}).get("id", self.run_key))
+        common.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        suggested = str(common.REPORTS_DIR / f"{name}{suffix}.{extension}")
         path, _ = QFileDialog.getSaveFileName(
             self,
-            self.tr("Save run CSV"),
-            f"{self.detail['run']['id']}-samples.csv",
-            self.tr("CSV (*.csv)"),
-        )
-        if path:
-            with open(path, "w", newline="", encoding="utf-8") as fh:
-                writer = csv.DictWriter(fh, fieldnames=table["columns"])
-                writer.writeheader()
-                writer.writerows(table["rows"])
-
-    def export_comparison_csv(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, self.tr("Save comparison CSV"), "deepvac-comparison.csv", self.tr("CSV (*.csv)")
+            self.tr("Export"),
+            suggested,
+            self.tr("{0} files (*.{1})").format(extension.upper(), extension),
         )
         if not path:
-            return
-        rows = [r for r in self.all_runs if r["key"] in (self.compare_runs or {self.run_key})]
-        lines = ["Run,Cost,MAE,Tail MAE,Overshoot"]
-        for r in rows:
-            lines.append(
-                ",".join(csv_escape(r[k]) for k in ["id", "cost", "mae", "tail_mae", "overshoot"])
-            )
-        from pathlib import Path as _Path
+            return None
+        if not path.lower().endswith("." + extension):
+            path += "." + extension
+        return Path(path)
 
-        _Path(path).write_text("\n".join(lines), encoding="utf-8")
+    def _export(self, extension, writer, suffix=""):
+        """Asks where, runs writer(path) with a wait cursor and says how it went."""
+        if not self.detail:
+            return None
+        path = self._ask_export_path(extension, suffix)
+        if path is None:
+            return None
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            writer(path)
+            error = None
+        except (
+            Exception
+        ) as exc:  # shown to the user: a run without the channels, a file in use, ...
+            error = str(exc)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if error:
+            QMessageBox.critical(
+                self, self.tr("Export"), self.tr("Failed to write {0}: {1}").format(path, error)
+            )
+            return None
+        QMessageBox.information(self, self.tr("Export"), self.tr("Saved to {0}").format(path))
+        return path
+
+    def export_chart_image(self, fmt_="png"):
+        """The chart as shown."""
+        return self._export(fmt_, lambda path: self.chart.export_view(str(path)))
+
+    def export_run_data(self, visible_only=False, tab_separated=False):
+        def write(path):
+            lo, hi = self.chart.current_x_range() if visible_only else (None, None)
+            run_export.write_data(
+                self._export_target(self.run_key), path, None, lo, hi, tab_separated
+            )
+
+        return self._export(
+            "txt" if tab_separated else "csv", write, "-range" if visible_only else ""
+        )
+
+    def export_comparison_csv(self):
+        def write(path):
+            targets = [self._export_target(k) for k in self._compared_keys()]
+            run_export.write_comparison_csv(targets, path, self._compared_channel())
+
+        return self._export("csv", write, "-comparison")
+
+    def export_report(self, fmt_="pdf"):
+        def write(path):
+            target = self._export_target(self.run_key)
+            first, compare = [], []
+            if self._compare_mode():
+                compare = [self._export_target(k) for k in self._compared_keys()[1:]]
+            else:
+                shown = [c for c in self.selected_columns if c in target.channels]
+                if shown:
+                    lo, hi = self.chart.current_x_range()
+                    image, _, _ = run_export.run_chart(
+                        target, channels=sorted(shown), from_s=lo, to_s=hi
+                    )
+                    first.append((self.tr("Chart as shown"), image))
+            run_export.write_report(
+                target,
+                path,
+                fmt_,
+                compare,
+                self.current_user.get("name") or "",
+                first,
+                self._compared_channel(),
+            )
+
+        return self._export(fmt_, write)
+
+    def export_bundle(self):
+        return self._export(
+            "json",
+            lambda path: run_export.write_bundle(self._export_target(self.run_key, True), path),
+        )

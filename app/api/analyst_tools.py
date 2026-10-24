@@ -3,9 +3,13 @@
 All numbers come from the run database and app.core.analysis (the port of
 control2-client's Analysis Core), never from the model. Results are kept
 small: an LLM reads them. Nothing here reaches a chamber.
+
+The export_* tools write files into Insight's reports folder, with DeepVac
+Control's export options (app/services/run_export.py): chart images, data,
+comparison CSV, experiment reports (PDF / HTML) and bundles. They return the
+file's path and a file:// link the chat can open.
 """
 
-import csv
 import math
 from datetime import datetime
 
@@ -17,6 +21,7 @@ from app.core.analysis.comparison import compare_configs, compare_kpis, match_st
 from app.core.analysis.kpis import ControlKpis, KpiOptions, compute_kpis
 from app.core.analysis.runanalysis import kpis_to_json, tracks_setpoint
 from app.core.analysis.seriesstats import compute_stats
+from app.services import data_service, day_recorder, run_export
 
 MAX_LIST = 50
 MAX_STAGES = 30
@@ -42,6 +47,54 @@ def n(value, digits: int = 5):
     if not math.isfinite(value):
         return None
     return float(f"{value:.{digits}g}")
+
+
+def _local(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _time_range(start: str, end: str) -> tuple[float, float]:
+    """Local times "YYYY-MM-DD[ HH:MM[:SS]]"; a bare day is the whole day. Empty: today so far."""
+
+    def parse(text, end_of_day):
+        text = text.strip().replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                value = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            if fmt == "%Y-%m-%d" and end_of_day:
+                value = value.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return value.timestamp()
+        raise ValueError(f"'{text}': use YYYY-MM-DD or YYYY-MM-DD HH:MM")
+
+    if not start:
+        now = datetime.now()
+        return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp(), now.timestamp()
+    t0 = parse(start, False)
+    t1 = parse(end, True) if end else parse(start, True)
+    if t1 < t0:
+        raise ValueError("end is before start")
+    return t0, t1
+
+
+STATUS_NAMES = {1: "idle", 2: "work", 3: "finish", 4: "alarm"}
+
+
+def _changes(times, column, is_status: bool, limit: int = 20) -> list[dict]:
+    """When a slowly changing channel (status, setpoint) took a new value."""
+    changes, last = [], None
+    for t, v in zip(times, column, strict=True):
+        if v != v:
+            continue
+        if last is None or abs(v - last) > 1e-6:
+            if last is not None:
+                to = STATUS_NAMES.get(int(v), v) if is_status else n(float(v), 4)
+                changes.append({"at": _local(t), "to": to})
+            last = v
+    return changes[:limit] + (
+        [{"note": f"{len(changes) - limit} more"}] if len(changes) > limit else []
+    )
 
 
 def _header(entry: CatalogueEntry) -> dict:
@@ -427,39 +480,203 @@ class AnalystTools:
             )
         return {"run": entry.ref, "count": len(manifest["events"]), "events": events}
 
+    # ------------------------------------------------------------ exports (files)
+
+    def _export_run(
+        self, entry: CatalogueEntry, with_samples: bool = False
+    ) -> run_export.RunExport:
+        return self.catalogue.export_run(entry, with_samples)
+
+    @staticmethod
+    def _export_path(entry: CatalogueEntry, what: str, extension: str):
+        stem = f"run{entry.number}_{run_export.safe_name(entry.name)}_{what}_{datetime.now():%Y%m%d_%H%M%S}"
+        path = common.REPORTS_DIR / f"{stem}.{extension}"
+        copy = 2
+        while path.exists():  # two exports in the same second
+            path = common.REPORTS_DIR / f"{stem}_{copy}.{extension}"
+            copy += 1
+        return path
+
+    @staticmethod
+    def _file(path) -> dict:
+        return {"file": str(path), "link": path.resolve().as_uri(), "bytes": path.stat().st_size}
+
     def export_data(
         self,
         run: str,
         channels: list[str] | None = None,
         from_s: float | None = None,
         to_s: float | None = None,
+        format: str = "csv",
     ) -> dict:
+        if format not in run_export.DATA_FORMATS:
+            raise ValueError("format must be csv or txt (tab separated)")
         entry = self.catalogue.resolve(run)
-        data, _ = self.catalogue.load(entry)
-        names = [c for c in (channels or sorted(data.channels)) if c in data.channels]
-        lo = -math.inf if from_s is None else float(from_s)
-        hi = math.inf if to_s is None else float(to_s)
-        reports = common.REPORTS_DIR
-        reports.mkdir(parents=True, exist_ok=True)
-        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in entry.name)[:60]
-        path = reports / f"run{entry.number}_{safe}_{datetime.now():%Y%m%d_%H%M%S}.csv"
-        rows = 0
-        with path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["elapsed_s", *names])
-            for i, t in enumerate(data.times):
-                if lo <= t <= hi:
-                    writer.writerow(
-                        [
-                            f"{t:.3f}",
-                            *(
-                                "" if math.isnan(data.channels[c][i]) else data.channels[c][i]
-                                for c in names
-                            ),
-                        ]
-                    )
-                    rows += 1
-        return {"run": entry.ref, "file": str(path), "rows": rows, "channels": names}
+        target = self._export_run(entry)
+        names = [c for c in (channels or list(target.channels)) if c in target.channels]
+        path = self._export_path(entry, "data", format)
+        rows = run_export.write_data(target, path, names, from_s, to_s, format == "txt")
+        return {"run": entry.ref, **self._file(path), "rows": rows, "channels": names}
+
+    def export_chart(
+        self,
+        run: str,
+        kind: str = "temperature",
+        channels: list[str] | None = None,
+        from_s: float | None = None,
+        to_s: float | None = None,
+        format: str = "png",
+        compare_with: list[str] | None = None,
+    ) -> dict:
+        fmt = format.lower()
+        if fmt not in run_export.IMAGE_FORMATS:
+            raise ValueError("format must be png, bmp or jpg")
+        entry = self.catalogue.resolve(run)
+        target = self._export_run(entry)
+        if compare_with:
+            others = [self.catalogue.resolve(r) for r in compare_with[:7]]
+            channel = (channels or ["temp"])[0]
+            image, caption = run_export.comparison_chart(
+                [target, *(self._export_run(e) for e in others)], channel
+            )
+            drawn, refs = [channel], [entry.ref, *(e.ref for e in others)]
+        else:
+            image, caption, drawn = run_export.run_chart(target, kind, channels, from_s, to_s)
+            refs = [entry.ref]
+        path = run_export.save_image(
+            image, self._export_path(entry, "compare" if compare_with else "chart", fmt), fmt
+        )
+        return {
+            "runs": refs,
+            "caption": caption,
+            "channels": drawn,
+            **self._file(path),
+            "size_px": [image.width(), image.height()],
+        }
+
+    def export_report(
+        self, run: str, format: str = "pdf", compare_with: list[str] | None = None
+    ) -> dict:
+        fmt = format.lower()
+        if fmt not in run_export.REPORT_FORMATS:
+            raise ValueError("format must be pdf or html")
+        entry = self.catalogue.resolve(run)
+        others = [self.catalogue.resolve(r) for r in (compare_with or [])[:5]]
+        path = run_export.write_report(
+            self._export_run(entry),
+            self._export_path(entry, "report", fmt),
+            fmt,
+            [self._export_run(e) for e in others],
+        )
+        return {
+            "run": entry.ref,
+            "compared_with": [e.ref for e in others],
+            **self._file(path),
+            "contents": "summary, experiment details, control KPIs, configuration, charts, stages, steady "
+            "states, anomalies, events, notes" + (", comparison" if others else ""),
+        }
+
+    def export_comparison(self, runs: list[str], channel: str = "temp") -> dict:
+        if len(runs) < 2:
+            raise ValueError("Give at least two runs.")
+        entries = [self.catalogue.resolve(r) for r in runs[:20]]
+        targets = [self._export_run(e) for e in entries]
+        path = self._export_path(entries[0], "comparison", "csv")
+        run_export.write_comparison_csv(targets, path, channel)
+        return {"runs": [e.ref for e in entries], "channel": channel, **self._file(path)}
+
+    def export_bundle(self, run: str) -> dict:
+        entry = self.catalogue.resolve(run)
+        path = run_export.write_bundle(
+            self._export_run(entry, with_samples=True), self._export_path(entry, "bundle", "json")
+        )
+        return {"run": entry.ref, **self._file(path)}
+
+    # ------------------------------------------------------------ full-day recordings
+
+    def list_recordings(self, chamber: str = "") -> dict:
+        days = day_recorder.list_days(chamber or None)
+        if chamber and not days:
+            known = sorted({d["chamber"] for d in day_recorder.list_days()})
+            raise ValueError(
+                f"No recordings of '{chamber}'. Recorded chambers: {', '.join(known) or 'none'}."
+            )
+        import pyarrow.parquet as pq
+
+        result = []
+        for d in days[-60:]:
+            try:
+                rows = pq.ParquetFile(d["path"]).metadata.num_rows
+            except Exception:
+                rows = None
+            result.append(
+                {
+                    "chamber": d["chamber"],
+                    "day": d["day"],
+                    "samples": rows,
+                    "mb": n(d["bytes"] / 1e6, 3),
+                }
+            )
+        return {"recordings": result, "total_days": len(days)}
+
+    def get_recording(
+        self, chamber: str = "", start: str = "", end: str = "", channels: list[str] | None = None
+    ) -> dict:
+        """What a chamber did between two local times (or a whole day), from its day recordings."""
+        chambers = sorted({d["chamber"] for d in day_recorder.list_days()})
+        if not chamber:
+            if len(chambers) != 1:
+                raise ValueError(
+                    f"Name the chamber: recorded ones are {', '.join(chambers) or 'none'}."
+                )
+            chamber = chambers[0]
+        t0, t1 = _time_range(start, end)
+        times, values = day_recorder.read_range(chamber, t0, t1, None)
+        if not len(times):
+            raise ValueError(
+                f"No samples of '{chamber}' between {_local(t0)} and {_local(t1)}; see list_recordings."
+            )
+        wanted = channels or [
+            c for c in ("temp", "temp_ref", "temp_u", "status_condition") if c in values
+        ]
+        wanted = wanted or list(values)[:8]
+        steps = [b - a for a, b in zip(times[:-1], times[1:], strict=True)]
+        gaps = [(a, b) for a, b in zip(times[:-1], times[1:], strict=True) if b - a > 30]
+        result = {
+            "chamber": chamber,
+            "from": _local(times[0]),
+            "to": _local(times[-1]),
+            "samples": len(times),
+            "sample_period_s": n(float(sorted(steps)[len(steps) // 2]), 3) if steps else None,
+            "gaps": [
+                {"from": _local(a), "to": _local(b), "minutes": n((b - a) / 60, 3)}
+                for a, b in gaps[:10]
+            ],
+            "channels": {},
+        }
+        missing = [c for c in wanted if c not in values]
+        for name in wanted:
+            if name not in values:
+                continue
+            column = values[name]
+            finite = [v for v in column if v == v]
+            result["channels"][name] = {
+                "min": n(min(finite)) if finite else None,
+                "max": n(max(finite)) if finite else None,
+                "mean": n(sum(finite) / len(finite)) if finite else None,
+                "first": n(finite[0]) if finite else None,
+                "last": n(finite[-1]) if finite else None,
+                "missing": len(column) - len(finite),
+            }
+        for name, label in (
+            ("status_condition", "status_changes"),
+            ("temp_ref", "setpoint_changes"),
+        ):
+            if name in values:
+                result[label] = _changes(times, values[name], name == "status_condition")
+        if missing:
+            result["unknown_channels"] = missing
+        return result
 
     def simulate_pid(
         self,
@@ -471,7 +688,6 @@ class AnalystTools:
         duration_min: float = 20.0,
     ) -> dict:
         """Closed-loop GRU digital twin (Insight's simulator): KPIs of a PID setting, nothing sent to a chamber."""
-        from app.services import data_service
 
         result = data_service.simulate_gru_run(
             {

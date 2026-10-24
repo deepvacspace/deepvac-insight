@@ -10,6 +10,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
+import shiboken6  # noqa: E402
 from PySide6.QtCore import QSettings, QThread  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
@@ -213,7 +214,8 @@ def deepvac_ui(deepvac_data_dir, qsettings_isolated, qapp, tmp_path, monkeypatch
 
     app = QApplication.instance()
     for window in list(app.topLevelWidgets()):
-        window.close()
+        if shiboken6.isValid(window):  # closing the main window can delete menus listed here
+            window.close()
     app.processEvents()
 
     leaked = [t for t in app.findChildren(QThread) if t.isRunning()]
