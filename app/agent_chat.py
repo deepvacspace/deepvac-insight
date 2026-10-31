@@ -22,6 +22,9 @@ feed names them) through GET /requests: when one is decided, sent, or its
 job ends, a notice appears here and, unless the crew already saw that state
 through its own tools, the chat sends the crew an update in the same session
 (UPDATE_PREFIX), so the Professor can tell the user what came of it.
+Test campaigns the Professor drafted are followed the same way (GET
+/campaigns): the operator's approval, every hold point (the Professor can
+recommend an option), and the end of the campaign (it issues the report).
 
 Chart images the analyst exported (export_chart) and the answer links to are
 shown under it as thumbnails; a click opens the file.
@@ -120,6 +123,10 @@ class AgentChatPanel(QFrame):
         self._requests_reply = None
         self._requests_timer = QTimer(self)
         self._requests_timer.timeout.connect(self._poll_requests)
+        self._campaigns = {}
+        self._campaigns_reply = None
+        self._campaigns_timer = QTimer(self)
+        self._campaigns_timer.timeout.connect(self._poll_campaigns)
         self._build_ui()
         self._add_message(
             "agent",
@@ -198,6 +205,8 @@ class AgentChatPanel(QFrame):
         self._session_id = str(uuid.uuid4())
         self._requests = {}  # the new conversation's crew doesn't know them
         self._requests_timer.stop()
+        self._campaigns = {}
+        self._campaigns_timer.stop()
         while self._messages.count() > 1:  # keep the stretch
             item = self._messages.takeAt(1)
             if item.widget():
@@ -454,6 +463,8 @@ class AgentChatPanel(QFrame):
             }
             if event.get("request") is not None and event.get("status") == "done":
                 self._track(event["request"], event.get("request_state"))
+            if event.get("campaign") is not None and event.get("status") == "done":
+                self._track_campaign(event["campaign"], event.get("campaign_news"))
         self._render_progress()
 
     # ── the crew's chamber requests ──────────────────────────────────────────
@@ -531,10 +542,76 @@ class AgentChatPanel(QFrame):
             if text:
                 news.append(text)
                 entry["told"] = entry["seen"]
+        for entry in self._campaigns.values():
+            campaign = entry["campaign"]
+            if campaign is None or entry["seen"] == entry["told"]:
+                continue
+            text = describe_campaign(campaign, for_crew=True)
+            if text:
+                news.append(text)
+            entry["told"] = entry["seen"]
         if news:
             lines = [UPDATE_PREFIX, *[f"- {text}" for text in news]]
             lines.append("Tell the user briefly what this means for what they asked.")
             self._post("\n".join(lines))
+
+    def _track_campaign(self, campaign_id, told):
+        """Follows a campaign the crew drafted or checked."""
+        entry = self._campaigns.setdefault(
+            int(campaign_id), {"campaign": None, "seen": None, "told": None}
+        )
+        entry["told"] = told
+        entry["seen"] = entry["seen"] or told
+        if not self._campaigns_timer.isActive():
+            self._campaigns_timer.start(REQUEST_POLL_MS)
+
+    def _open_campaign_ids(self):
+        return [
+            cid
+            for cid, entry in self._campaigns.items()
+            if entry["campaign"] is None or _campaign_open(entry["campaign"])
+        ]
+
+    def _poll_campaigns(self):
+        ids = self._open_campaign_ids()
+        if not ids:
+            self._campaigns_timer.stop()
+            return
+        if self._campaigns_reply is not None:
+            return
+        self._campaigns_reply = self._api_get("/campaigns?ids=" + ",".join(map(str, ids)))
+        if self._campaigns_reply is not None:
+            self._campaigns_reply.finished.connect(self._on_campaigns)
+
+    def _on_campaigns(self):
+        reply = self._campaigns_reply
+        self._campaigns_reply = None
+        if reply is None:
+            return
+        reply.deleteLater()
+        if reply.error() != QNetworkReply.NoError:
+            return
+        try:
+            campaigns = json.loads(bytes(reply.readAll()).decode("utf-8")).get("campaigns", [])
+        except ValueError:
+            return
+        self.show_campaigns(campaigns)
+
+    def show_campaigns(self, campaigns):
+        """Shows notices for followed campaigns that changed and updates the crew."""
+        for campaign in campaigns:
+            entry = self._campaigns.get(int(campaign["id"]))
+            if entry is None:
+                continue
+            entry["campaign"] = campaign
+            if campaign["news"] != entry["seen"]:
+                entry["seen"] = campaign["news"]
+                news = describe_campaign(campaign)
+                if news:
+                    self._add_message("notice", "Insight · " + news)
+        if not self._open_campaign_ids():
+            self._campaigns_timer.stop()
+        self._maybe_send_update()
 
     def show_images(self, text):
         """Thumbnails of the local images an answer links to (separate for tests)."""
@@ -653,6 +730,47 @@ def describe_request(request):
         "unknown": "sent to the chamber, but the PLC never reported the job running.",
     }
     return f"{head}: {texts.get(job, job)}"
+
+
+def _campaign_open(campaign):
+    """Whether the campaign can still change."""
+    if campaign.get("state") in ("declined", "cancelled"):
+        return False
+    if campaign.get("state") in ("completed", "aborted"):
+        return not campaign.get("report_issued_at")
+    return True
+
+
+def describe_campaign(campaign, for_crew=False):
+    """Status of a campaign in a sentence or two; None when there is nothing to tell."""
+    head = f"Campaign {campaign['id']} ({campaign.get('title', '')})"
+    state = campaign.get("state")
+    hold = campaign.get("hold_point")
+    step = campaign.get("step")
+    where = f" (step {step['index']}/{step['of']}: {step['label']})" if step else ""
+    if hold:
+        options = ", ".join(f"{o['label']} [{o['key']}]" for o in hold.get("options", []))
+        text = f"{head}: hold point: {hold['title']} {hold.get('detail', '')} Options: {options}."
+        if for_crew and hold.get("kind") in ("anomaly", "stabilise", "interrupted"):
+            text += (
+                " Check the data (get_campaign, the analyst for the recording) and recommend one option "
+                "with recommend; the operator decides in the Campaigns page."
+            )
+        elif for_crew and hold.get("kind") == "approval":
+            text += " The operator decides in the Campaigns page."
+        return text
+    if state in ("running", "holding"):
+        return f"{head}: running{where}."
+    if state in ("completed", "aborted") and not campaign.get("report_issued_at"):
+        reason = campaign.get("end_reason") or state
+        text = f"{head}: {state} ({reason})."
+        if for_crew:
+            text += " Issue the as-run report: get_report_facts, then issue_report with a summary."
+        return text
+    if state == "declined":
+        reason = campaign.get("end_reason")
+        return f"{head}: declined" + (f" ({reason})." if reason else ".")
+    return None
 
 
 class AgentChat(QObject):

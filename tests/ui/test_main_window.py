@@ -22,8 +22,8 @@ def test_main_window_constructs(window):
     assert window is not None
 
 
-def test_sidebar_is_present_with_seven_nav_buttons(window):
-    assert len(window._nav_buttons) == 7  # one per page; Live Monitoring was removed
+def test_sidebar_is_present_with_eight_nav_buttons(window):
+    assert len(window._nav_buttons) == 8
 
 
 def test_title_bar_is_present(window):

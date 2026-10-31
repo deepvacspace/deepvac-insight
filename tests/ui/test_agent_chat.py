@@ -259,3 +259,44 @@ def test_exported_charts_show_as_thumbnails(chat, tmp_path):
     assert [r for r, _ in panel.messages()].count("image") == 1
     thumb = panel.findChildren(ImageThumbnail)[0]
     assert thumb.pixmap().width() == int(400 * 0.82)
+
+
+def test_tells_the_crew_about_its_campaigns_hold_points(chat, qtbot, crew_webhook, monkeypatch):
+    from app.agent_chat import UPDATE_PREFIX
+
+    url, received = crew_webhook
+    monkeypatch.setattr(settings_service, "load_agent_chat_url", lambda: url)
+    panel = chat.panel
+    panel.show_activity(
+        [
+            {"id": 1, "agent": "Professor", "text": "submitting", "status": "done"}
+            | {"campaign": 3, "campaign_news": "approval|1|"},
+        ]
+    )
+    waiting = {"id": 3, "title": "CubeSat", "state": "approval", "news": "approval|1|"}
+    panel.show_campaigns([waiting])
+    assert not [m for m in panel.messages() if m[0] == "notice"]
+
+    anomaly = {
+        "id": 3,
+        "title": "CubeSat",
+        "state": "holding",
+        "news": "holding|4|",
+        "hold_point": {
+            "id": 4,
+            "kind": "anomaly",
+            "title": "The temperature left the band on the hot plateau.",
+            "detail": "The chamber read 39.5 °C.",
+            "options": [{"key": "extend_dwell", "label": "Extend the dwell"}],
+        },
+    }
+    panel.show_campaigns([anomaly])
+    qtbot.waitUntil(lambda: len(received) == 1, timeout=5000)
+    update = received[0]["chatInput"]
+    assert update.startswith(UPDATE_PREFIX)
+    assert "Campaign 3 (CubeSat): hold point: The temperature left the band" in update
+    assert "Extend the dwell [extend_dwell]" in update and "recommend one option" in update
+    qtbot.waitUntil(lambda: panel._reply is None and not panel._wrap_up, timeout=5000)
+    notices = [text for role, text in panel.messages() if role == "notice"]
+    assert notices[-1].startswith("Insight · Campaign 3 (CubeSat): hold point")
+    assert "recommend" not in notices[-1]

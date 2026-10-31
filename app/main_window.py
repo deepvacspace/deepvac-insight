@@ -19,6 +19,7 @@ from app.services.collab_server import CollabServer
 from app.services.opc_broadcast_server import OpcBroadcastServer
 from app.tab_system import EditorArea
 from app.title_bar import TitleBar
+from app.views.campaigns import CampaignsPage
 from app.views.controller import ControllerMixin
 from app.views.dashboard import DashboardMixin
 from app.views.opc import OpcMixin
@@ -94,6 +95,7 @@ class DeepVacDesktop(
         self.agent_api = None
         self._agent_requests_dialog = None
         self._known_pending_requests = 0
+        self._known_open_holds = 0
         if settings_service.load_agent_api_enabled():
             self._start_agent_api()
         self._agent_requests_timer = QTimer(self)
@@ -245,6 +247,9 @@ class DeepVacDesktop(
         self.reports_widget = self._reports_view()  # 4
         self.controller_widget = self._controller_view()  # 5
         self.opc_widget = self._opc_view()  # 6
+        self.campaigns_widget = CampaignsPage(  # 7
+            self.current_user, lambda: self.agent_api is not None and self.agent_api.supervisor
+        )
         for w in [
             self.dashboard_widget,
             self.runs_widget,
@@ -253,6 +258,7 @@ class DeepVacDesktop(
             self.reports_widget,
             self.controller_widget,
             self.opc_widget,
+            self.campaigns_widget,
         ]:
             self.content_stack.addWidget(w)
 
@@ -288,6 +294,7 @@ class DeepVacDesktop(
             ("act_reports_btn", "file-earmark", self.tr("Reports"), 4),
             ("act_controller_btn", "square", self.tr("Controller"), 5),
             ("act_opc_btn", "broadcast", self.tr("OPC Server"), 6),
+            ("act_campaigns_btn", "clipboard-check", self.tr("Test Campaigns"), 7),
         ]
         # Reports and OPC Server are hidden from the sidebar: reports are
         # downloaded from the Runs list, and the OPC broadcast is off the menu for
@@ -387,6 +394,12 @@ class DeepVacDesktop(
             else self.tr("Wiki Proposals…")
         )
         act_wiki_folder = menu.addAction(self.tr("Open Wiki Folder"))
+        new_events = self._new_observer_events()
+        act_observer = menu.addAction(
+            self.tr("Observer Events ({0} new)…").format(new_events)
+            if new_events
+            else self.tr("Observer Events…")
+        )
         act_agent_api = menu.addAction(self.tr("Agent API"))
         act_agent_api.setCheckable(True)
         act_agent_api.setChecked(self.agent_api is not None)
@@ -419,6 +432,8 @@ class DeepVacDesktop(
             self._show_wiki_proposals()
         elif chosen == act_wiki_folder:
             self._open_wiki_folder()
+        elif chosen == act_observer:
+            self._show_observer_events()
         elif chosen == act_agent_api:
             self._toggle_agent_api(act_agent_api.isChecked())
         elif chosen == act_agent_token:
@@ -580,6 +595,20 @@ class DeepVacDesktop(
         if pending > self._known_pending_requests:
             self._show_agent_requests()
         self._known_pending_requests = pending
+        holds = self._open_campaign_holds()
+        if holds > self._known_open_holds:
+            self._nav_to(7)
+            self.raise_()
+            self.activateWindow()
+        self._known_open_holds = holds
+
+    def _open_campaign_holds(self):
+        from app.services import campaign_service
+
+        try:
+            return campaign_service.open_holds_count()
+        except Exception:
+            return 0
 
     # ── The crew's wiki (the Brain) ──────────────────────────────────────────
 
@@ -603,6 +632,19 @@ class DeepVacDesktop(
         from app.services import wiki_service
 
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(wiki_service.wiki_dir())))
+
+    def _new_observer_events(self):
+        from app.services import observer_service
+
+        try:
+            return observer_service.unacknowledged_count()
+        except Exception:
+            return 0
+
+    def _show_observer_events(self):
+        from app.observer_dialog import ObserverDialog
+
+        ObserverDialog(self.current_user, self).exec()
 
     def _show_agent_requests(self):
         from app.agent_requests_dialog import AgentRequestsDialog
