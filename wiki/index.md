@@ -15,6 +15,7 @@ Every page with its summary. Rebuilt automatically: don't edit. How pages are wr
 - [[procedure-alarm-and-finish]] **Confirm an alarm or a finished job**: What to do when the PLC status is *alarm* (4) or *finish* (3). The status values are explained in [[programs-and-jobs]], the alarms in [[alarms]].
 - [[procedure-manual-setpoint]] **Set a temperature (manual setpoint)**: How to bring the chamber to a temperature and keep it there, by hand in Insight or through the crew. The job it makes is described in [[programs-and-jobs]].
 - [[procedure-run-test-profile]] **Run a test profile (program)**: How to run a sequence of temperatures as one PLC program. Profiles and intervals are explained in [[programs-and-jobs]].
+- [[procedure-test-campaign]] **Run a thermal test campaign**: A qualification or acceptance test of a part (the test article), from the customer's requirement to a signed as-run report. The Professor drives it from the chat, or an operator starts it in the **Test Campaigns** pag…
 
 ## Reference
 

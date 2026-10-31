@@ -125,6 +125,68 @@ recording (34 days, 32 or 44 channels):
 | zlib float64 column per channel | 6 | 0.19 (0.59) |
 | **Parquet, as recorded now** | **9.5** | **0.30 (0.68)** |
 
+## Test campaigns
+
+A thermal qualification or acceptance test as a campaign, from the customer's requirement to a
+signed as-run report (sidebar → **Test Campaigns**; the Professor drives the same flow from the
+chat):
+
+- **Plan** (`app/services/campaign_service.py`): the specification comes from the standards pack,
+  `data/standards_pack.json` (written with illustrative ECSS-style values on first use: margin and
+  cycles per level, dwell, ramp limit, stabilisation band and timeout, excursion time, vent window,
+  ambient, `vacuum` "manual" or "none"). Plateaus are the predicted temperatures ± the margin and
+  must be inside the chamber's setpoint range. Every value names its source; cycles, dwell and
+  ramp can be changed with a reason. *Rehearsal* shortens the dwells.
+- **Hold points**: approval, pump-down (no gauge: the operator confirms), a dwell temperature out
+  of the band for longer than the excursion time (the dwell clock pauses), a plateau that doesn't
+  stabilise in time, an interrupted job (alarm, stopped, another job's setpoint), venting. Only
+  the signed-in user decides, on the page; agents can `recommend` an option, shown with a ★.
+- **Run supervisor** (`app/api/campaign_supervisor.py`), started with the Agent API: each ramp is
+  one PLC setpoint job (ramp at the specification's rate, then a hold long enough for the dwell
+  plus a 2 h margin, renewed while the campaign runs, so the PLC ends it on its own if Insight
+  stops). Its gateway refuses commands outside the rules (only the supervisor commands; plateaus
+  or ambient only; inside the chamber's range; ramp ≤ the specification; cycling after the
+  pump-down; venting approved and inside the vent window, checked on the live temperature) and
+  logs the refusal. **Stop now** on the page stops the chamber's job at once.
+- **Signed log**: every step, decision and refusal, each entry chained to the previous one with
+  SHA-256 (`campaign_log`); **Verify log** rechecks the chain.
+- **Report** (`app/services/campaign_report.py`): PDF and markdown in the reports folder, with the
+  specification and sources, plateau results, deviations, decisions with recommendations, blocked
+  commands, the temperature chart, and the chain's last hash signed with the installation's
+  Ed25519 device key. The summary is the Professor's or a template's (it says which); **Sign off**
+  writes it again with the operator's name.
+
+Campaigns live in `data/deepvac_campaigns.sqlite3`. One campaign at a time per chamber.
+
+## The Observer: events on the chambers
+
+While the Agent API runs, the observer monitor (`app/api/observer_monitor.py`) watches every PLC
+chamber and records what needs attention as events (`app/services/observer_service.py`,
+`data/deepvac_observer.sqlite3`), each once:
+
+| Event | Severity | When |
+|---|---|---|
+| alarm / alarm cleared | critical / info | the PLC reports an alarm; it clears |
+| job ended | info (warning in alarm) | a job finishes, is stopped or ends in alarm; with the agent request that started it |
+| drift | warning | the temperature more than `drift_c` (3 °C) from a setpoint steady for `settled_min` (10), for `drift_min` (5 min); not during ramps |
+| anomaly | warning (stuck sensor: info) | oscillation, spikes or a flat temperature in the last `anomaly_window_min` (30) of a running job |
+| offline / online | warning / info | a chamber that was online not heard from for `offline_s` (60 s); back |
+| hold | warning | a campaign hold point waiting (the approval after `waiting_min`) |
+| request waiting | warning | an agent request pending for `waiting_min` (10 min) |
+
+Gear menu → **Observer Events** lists them; people acknowledge them there, and the Observer's
+summary and message appear once it has read one. The same dialog holds the settings
+(`data/observer.json`): watch on/off, **send events to the Observer workflow** (n8n webhook, off by
+default: the Observer isn't connected yet), the threshold, the drift and waiting times, and *Send
+Test Event*. Sent events carry the API token as `Authorization: Bearer`; a failed send is retried
+five times with a growing delay.
+
+The Observer agent (`../agents/workflows/deepvac-observer.json`) uses `/observer/mcp`:
+`get_event` (facts, the chamber now, its last 30 min, the campaign or request involved, earlier
+events), `list_events`, `get_live_status`, `report_event` (summary, notify, message; read back at
+`/observer/events?ids=`), and `propose_stop` / `propose_setpoint`, which create ordinary agent
+requests (refused on a chamber running a campaign).
+
 ## The Brain: wiki and experiments database
 
 The AI crew's knowledge, for the Professor (`/brain/mcp`):
@@ -284,13 +346,15 @@ python tcp\dummy_chamber_server.py --port 5555
 ## Agent API
 
 An MCP server (`app/api/`) that the DeepVac crew of AI agents (`../agents`,
-n8n) calls. Three endpoints, one bearer token:
+n8n) calls. Five endpoints, one bearer token:
 
 | Endpoint | For | Tools |
 |---|---|---|
 | `http://127.0.0.1:8765/analyst/mcp` | Analyst | list / rank runs, run summary, stages, KPIs, statistics, anomalies, compare runs, channels, events, PID simulation on the GRU twin, full-day recordings (list_recordings, get_recording), and exports (below). Read-only. |
 | `http://127.0.0.1:8765/worker/mcp` | Worker | chambers, live status, PLC settings, programs; requests to set a temperature, run a program or stop |
 | `http://127.0.0.1:8765/brain/mcp` | Professor | the Brain (below): wiki index, search, read and proposals; the experiments database's schema and read-only SQL |
+| `http://127.0.0.1:8765/professor/mcp` | Professor | test campaigns (below): standards pack, draft, submit, follow, recommend at hold points, report |
+| `http://127.0.0.1:8765/observer/mcp` | Observer | events on the chambers (below): read one with its context, report on it, propose a stop or setpoint |
 
 The analyst's exports copy DeepVac Control's Export menu
 (`app/services/run_export.py`) and write into the reports folder
