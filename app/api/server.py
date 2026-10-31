@@ -1,10 +1,14 @@
-"""The agent API: two MCP endpoints (streamable HTTP) behind one bearer token.
+"""The agent API: MCP endpoints (streamable HTTP) behind one bearer token.
 
     /analyst/mcp   read-only analysis of recorded runs (the Analyst agent)
     /worker/mcp    the chamber now, and requests to change it (the Worker agent)
     /brain/mcp     the crew's knowledge: the wiki and the experiments database (the Professor)
+    /professor/mcp test campaigns: requirement, plan, approval, run, report (the Professor)
+    /observer/mcp  events Insight detected on the chambers (the Observer)
     /activity      the agents' recent tool calls, for the app's chat
     /requests      chamber requests by id (?ids=1,2), for the app's chat
+    /campaigns     test campaigns by id (?ids=1,2), for the app's chat
+    /observer/events  Observer events by id (?ids=1,2), for the Observer workflow
     /health        liveness, no token
 
 Splitting the endpoints keeps each agent to its own tools whatever its MCP
@@ -43,10 +47,15 @@ from app.api.auth import (  # noqa: F401 (api_token is part of this module's API
     api_token,
 )
 from app.api.brain_tools import BrainTools
+from app.api.campaign_supervisor import CampaignSupervisor
 from app.api.chambers import ChamberLinks
 from app.api.executor import RequestExecutor
+from app.api.observer_monitor import ObserverMonitor
+from app.api.observer_tools import ObserverTools
+from app.api.professor_tools import ProfessorTools
 from app.api.worker_tools import WorkerTools, public_request
 from app.services import agent_requests_service as requests_service
+from app.services import campaign_service, observer_service
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +70,12 @@ REQUEST_TOOLS = (
     "get_request",
     "wait_for_request",
 )  # their result is one request: the activity feed notes its id and state
+CAMPAIGN_TOOLS = (
+    "draft_campaign",
+    "submit_campaign",
+    "get_campaign",
+    "wait_for_campaign",
+)
 REQUEST = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
 )
@@ -75,6 +90,20 @@ BRAIN_INSTRUCTIONS = (
     "lessons from experiments: search it (wiki_search) and read the pages (wiki_read) before planning, and quote "
     "them. The experiments database answers questions over many runs in SQL (sql_schema first, then sql_query). "
     "wiki_propose suggests a new page or a new version of one; a person approves it."
+)
+PROFESSOR_INSTRUCTIONS = (
+    "Test campaigns on a DeepVac chamber, as a thermal qualification or acceptance test: draft_campaign derives "
+    "the specification from the customer's requirement and the standards pack (every value names its source), "
+    "submit_campaign asks an operator to approve it, the run supervisor in DeepVac Insight runs it, hold points "
+    "stop it until the operator chooses an option (recommend one with your rationale), and issue_report writes "
+    "the as-run report. You never send commands to the chamber and never decide a hold point."
+)
+OBSERVER_INSTRUCTIONS = (
+    "Events DeepVac Insight detected on its chambers: alarms, jobs ending, drift from a steady setpoint, anomalies "
+    "in the live temperature, a chamber offline, campaign hold points and requests waiting for a person. "
+    "get_event gives the facts and context; report_event records your summary and whether people should be "
+    "notified. propose_stop / propose_setpoint create a request an operator approves; never on a chamber running "
+    "a test campaign."
 )
 WORKER_INSTRUCTIONS = (
     "The DeepVac chamber now. Reading tools return live PLC values. request_* tools never change the chamber "
@@ -110,7 +139,10 @@ def expose(mcp: MCPServer, annotations: ToolAnnotations):
                 activity.finished(event, ok=False)
                 raise
             request = result if fn.__name__ in REQUEST_TOOLS and isinstance(result, dict) else None
-            activity.finished(event, ok=True, request=request)
+            campaign = (
+                result if fn.__name__ in CAMPAIGN_TOOLS and isinstance(result, dict) else None
+            )
+            activity.finished(event, ok=True, request=request, campaign=campaign)
             # compact JSON text: an LLM reads it, and indented / structured duplicates cost tokens
             return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
@@ -395,12 +427,154 @@ def build_brain_server(tools: BrainTools) -> MCPServer:
     return mcp
 
 
+def build_professor_server(tools: ProfessorTools) -> MCPServer:
+    mcp = MCPServer("deepvac-professor", instructions=PROFESSOR_INSTRUCTIONS)
+
+    @expose(mcp, READ_ONLY)
+    def get_standards_pack() -> dict:
+        """The standards pack campaigns are derived from (margins and cycles per level, dwell, ramp limit,
+        stabilisation band, vent window), the chamber's setpoint range and the chambers campaigns can run on."""
+        return tools.get_standards_pack()
+
+    @expose(mcp, REQUEST)
+    def draft_campaign(
+        article: str,
+        op_min_c: float,
+        op_max_c: float,
+        level: str = "qualification",
+        chamber: str = "",
+        notes: str = "",
+        rehearsal: bool = False,
+        cycles: int | None = None,
+        dwell_min: float | None = None,
+        ramp_c_per_min: float | None = None,
+        reason: str = "",
+    ) -> dict:
+        """Draft a test campaign from the customer's requirement: the test article, its lowest and highest
+        predicted temperatures (°C) and the level (qualification or acceptance). The plateaus, cycles, dwell, ramp
+        and band come from the standards pack; cycles / dwell_min / ramp_c_per_min change them (give the reason).
+        rehearsal: shortened dwells to try the campaign out. Returns the specification with the source of every
+        value, the steps and the estimated duration. A draft sends nothing."""
+        return tools.draft_campaign(
+            article,
+            op_min_c,
+            op_max_c,
+            level,
+            chamber,
+            notes,
+            rehearsal,
+            cycles,
+            dwell_min,
+            ramp_c_per_min,
+            reason,
+        )
+
+    @expose(mcp, REQUEST)
+    def submit_campaign(campaign_id: int) -> dict:
+        """Submit a drafted campaign for approval: an operator approves or declines it in DeepVac Insight."""
+        return tools.submit_campaign(campaign_id)
+
+    @expose(mcp, READ_ONLY)
+    def get_campaign(campaign_id: int = 0) -> dict:
+        """A campaign (0: the latest): state, stage, the current step and its progress, the open hold point with
+        its options, plateau results, deviations, decisions, blocked commands, the last 30 min of temperature."""
+        return tools.get_campaign(campaign_id)
+
+    @expose(mcp, READ_ONLY)
+    def list_campaigns(limit: int = 10) -> dict:
+        """Recent campaigns, newest first, with their state and current step."""
+        return tools.list_campaigns(limit)
+
+    @expose(mcp, READ_ONLY)
+    def wait_for_campaign(campaign_id: int, timeout_s: float = 120) -> dict:
+        """Wait until the campaign's state or hold point changes (approval decided, a hold point opens or is
+        decided, the campaign ends); at most 180 s."""
+        return tools.wait_for_campaign(campaign_id, timeout_s)
+
+    @expose(mcp, REQUEST)
+    def recommend(campaign_id: int, option: str, rationale: str) -> dict:
+        """Recommend one option at the campaign's open hold point, with the rationale and the numbers behind it.
+        The operator sees it in DeepVac Insight and decides."""
+        return tools.recommend(campaign_id, option, rationale)
+
+    @expose(mcp, READ_ONLY)
+    def get_report_facts(campaign_id: int) -> dict:
+        """The facts of an ended campaign the report's summary may use: plateaus, deviations, decisions,
+        blocked commands, overrides."""
+        return tools.get_report_facts(campaign_id)
+
+    @expose(mcp, REQUEST)
+    def issue_report(campaign_id: int, summary: str) -> dict:
+        """Issue the as-run report of an ended campaign (PDF and markdown) with your summary: three plain
+        sentences from get_report_facts only (cycles completed, deviations and the decisions taken, what the
+        engineer should verify). Returns the file links."""
+        return tools.issue_report(campaign_id, summary)
+
+    @expose(mcp, REQUEST)
+    def cancel_campaign(campaign_id: int, reason: str) -> dict:
+        """Withdraw a draft or a campaign waiting for approval. A running campaign is stopped by an operator."""
+        return tools.cancel_campaign(campaign_id, reason)
+
+    return mcp
+
+
+def build_observer_server(tools: ObserverTools) -> MCPServer:
+    mcp = MCPServer("deepvac-observer", instructions=OBSERVER_INSTRUCTIONS)
+
+    @expose(mcp, READ_ONLY)
+    def get_event(event_id: int) -> dict:
+        """One event with its facts, the chamber now, its last 30 min of temperature and setpoint, the campaign or
+        request involved, and the chamber's other events of the last 24 h."""
+        return tools.get_event(event_id)
+
+    @expose(mcp, READ_ONLY)
+    def list_events(
+        hours: float = 24, min_severity: str = "info", chamber: str = "", limit: int = 20
+    ) -> dict:
+        """Recent events, newest first, with their summary and whether a person acknowledged them.
+        min_severity: info, warning or critical."""
+        return tools.list_events(hours, min_severity, chamber, limit)
+
+    @expose(mcp, READ_ONLY)
+    def get_live_status(chamber: str = "") -> dict:
+        """The chamber now: status, temperature, setpoint, control output, active alarms."""
+        return tools.get_live_status(chamber)
+
+    @expose(mcp, REQUEST)
+    def report_event(event_id: int, summary: str, notify: bool, message: str = "") -> dict:
+        """Record your reading of an event: a summary from the facts (two or three sentences), notify true when a
+        person should act or know now, and then the message for them (what happened, the numbers, what to check)."""
+        return tools.report_event(event_id, summary, notify, message)
+
+    @expose(mcp, REQUEST)
+    def propose_stop(event_id: int, reason: str) -> dict:
+        """Propose stopping the job on the event's chamber. Creates a request an operator approves or rejects in
+        DeepVac Insight; nothing is sent yet. Refused on a chamber running a test campaign."""
+        return tools.propose_stop(event_id, reason)
+
+    @expose(mcp, REQUEST)
+    def propose_setpoint(
+        event_id: int,
+        temperature_c: float,
+        reason: str,
+        ramp_c_per_min: float | None = None,
+        hold_minutes: float | None = None,
+    ) -> dict:
+        """Propose a setpoint on the event's chamber (e.g. back to ambient), with optional ramp and hold. Creates a
+        request an operator approves; nothing is sent yet. Refused on a chamber running a test campaign."""
+        return tools.propose_setpoint(event_id, temperature_c, reason, ramp_c_per_min, hold_minutes)
+
+    return mcp
+
+
 def build_app(
     token: str,
     analyst: AnalystTools,
     worker: WorkerTools,
     host: str = DEFAULT_HOST,
     brain: BrainTools | None = None,
+    professor: ProfessorTools | None = None,
+    observer: ObserverTools | None = None,
 ):
     # Host header check against DNS rebinding: this machine, and n8n in Docker on it
     security = TransportSecuritySettings(
@@ -420,6 +594,14 @@ def build_app(
     brain_app = brain_mcp.streamable_http_app(
         streamable_http_path="/mcp", transport_security=security, host=host
     )
+    professor_mcp = build_professor_server(professor or ProfessorTools(worker.links))
+    professor_app = professor_mcp.streamable_http_app(
+        streamable_http_path="/mcp", transport_security=security, host=host
+    )
+    observer_mcp = build_observer_server(observer or ObserverTools(worker.links))
+    observer_app = observer_mcp.streamable_http_app(
+        streamable_http_path="/mcp", transport_security=security, host=host
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
@@ -427,6 +609,8 @@ def build_app(
             await stack.enter_async_context(analyst_mcp.session_manager.run())
             await stack.enter_async_context(worker_mcp.session_manager.run())
             await stack.enter_async_context(brain_mcp.session_manager.run())
+            await stack.enter_async_context(professor_mcp.session_manager.run())
+            await stack.enter_async_context(observer_mcp.session_manager.run())
             yield
 
     async def health(_request):
@@ -451,14 +635,38 @@ def build_app(
             {"requests": [public_request(r) for r in requests_service.get_requests(ids)]}
         )
 
+    async def campaigns_by_id(request):
+        """Test campaigns by id (?ids=1,2)."""
+        try:
+            ids = [int(i) for i in request.query_params.get("ids", "").split(",") if i.strip()]
+        except ValueError:
+            return JSONResponse({"error": "ids: comma-separated campaign ids"}, status_code=400)
+        found = [campaign_service.get_campaign(i) for i in ids[:50]]
+        return JSONResponse(
+            {"campaigns": [campaign_service.public(c, detail=False) for c in found if c]}
+        )
+
+    async def observer_events(request):
+        """Observer events by id (?ids=1,2)."""
+        try:
+            ids = [int(i) for i in request.query_params.get("ids", "").split(",") if i.strip()]
+        except ValueError:
+            return JSONResponse({"error": "ids: comma-separated event ids"}, status_code=400)
+        events = observer_service.get_events(ids[:50])
+        return JSONResponse({"events": [observer_service.public(e) for e in events]})
+
     starlette = Starlette(
         routes=[
             Route("/health", health),
             Route("/activity", recent_activity),
             Route("/requests", requests_by_id),
+            Route("/campaigns", campaigns_by_id),
+            Route("/observer/events", observer_events),
             Mount("/analyst", app=analyst_app),
             Mount("/worker", app=worker_app),
             Mount("/brain", app=brain_app),
+            Mount("/professor", app=professor_app),
+            Mount("/observer", app=observer_app),
         ],
         lifespan=lifespan,
     )
@@ -483,6 +691,8 @@ class AgentApi:
         self._own_links = links is None
         self.links = links or ChamberLinks()
         self.executor = RequestExecutor(self.links) if execute_requests else None
+        self.supervisor = CampaignSupervisor(self.links) if execute_requests else None
+        self.observer = ObserverMonitor(self.links, self.token) if execute_requests else None
         app = build_app(self.token, AnalystTools(), WorkerTools(self.links), host)
         self._server = uvicorn.Server(
             uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on")
@@ -496,6 +706,10 @@ class AgentApi:
     def start(self) -> None:
         if self.executor:
             self.executor.start()
+        if self.supervisor:
+            self.supervisor.start()
+        if self.observer:
+            self.observer.start()
         self._thread = threading.Thread(target=self._server.run, name="agent-api", daemon=True)
         self._thread.start()
 
@@ -517,6 +731,10 @@ class AgentApi:
             self._thread.join(timeout=5)
         if self.executor:
             self.executor.stop()
+        if self.supervisor:
+            self.supervisor.stop()
+        if self.observer:
+            self.observer.stop()
         if self._own_links:
             self.links.close()
 

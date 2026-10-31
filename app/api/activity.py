@@ -5,7 +5,8 @@ Kept in memory (the last few hundred calls) and served at GET /activity, so
 the chat in the app can show the crew's progress while it works on an
 answer. A call that returned a chamber request also records its id and the
 state the agent saw ("request" / "request_state"), so the chat knows which
-requests this conversation made and what the crew already knows of them.
+requests this conversation made and what the crew already knows of them;
+likewise for test campaigns ("campaign" / "campaign_news").
 Nothing here is stored.
 """
 
@@ -18,7 +19,13 @@ _lock = threading.Lock()
 _events: deque = deque(maxlen=300)
 _ids = itertools.count(1)
 
-AGENT_NAMES = {"analyst": "Analyst", "worker": "Worker", "brain": "Brain"}
+AGENT_NAMES = {
+    "analyst": "Analyst",
+    "worker": "Worker",
+    "brain": "Brain",
+    "professor": "Professor",
+    "observer": "Observer",
+}
 
 
 def _runs(args):
@@ -100,6 +107,39 @@ def describe(tool: str, args: dict) -> str:
         ),
         "sql_schema": lambda: "reading the experiments database's tables",
         "sql_query": lambda: "querying the experiments database",
+        "get_standards_pack": lambda: "reading the standards pack",
+        "draft_campaign": lambda: (
+            f"drafting a {a.get('level', 'qualification')} campaign for {a.get('article', 'the article')}"
+        ),
+        "submit_campaign": lambda: (
+            f"submitting campaign {a.get('campaign_id')} for approval (Campaigns page)"
+        ),
+        "get_campaign": lambda: (
+            f"checking campaign {a['campaign_id']}"
+            if a.get("campaign_id")
+            else "checking the campaign"
+        ),
+        "list_campaigns": lambda: "listing the campaigns",
+        "wait_for_campaign": lambda: f"following campaign {a.get('campaign_id')}",
+        "recommend": lambda: (
+            f"recommending '{a.get('option')}' at the hold point of campaign {a.get('campaign_id')}"
+        ),
+        "get_report_facts": lambda: f"reading the results of campaign {a.get('campaign_id')}",
+        "issue_report": lambda: f"writing the report of campaign {a.get('campaign_id')}",
+        "cancel_campaign": lambda: f"withdrawing campaign {a.get('campaign_id')}",
+        "get_event": lambda: f"reading event {a.get('event_id')}",
+        "list_events": lambda: "listing the recent events",
+        "report_event": lambda: (
+            f"reporting on event {a.get('event_id')}"
+            + (" and notifying people" if a.get("notify") else "")
+        ),
+        "propose_stop": lambda: (
+            f"proposing to stop the job (event {a.get('event_id')}; waits for approval)"
+        ),
+        "propose_setpoint": lambda: (
+            f"proposing a setpoint of {a.get('temperature_c')} °C (event {a.get('event_id')}; "
+            "waits for approval)"
+        ),
     }
     try:
         return texts[tool]() if tool in texts else f"using {tool}"
@@ -123,8 +163,11 @@ def started(agent: str, tool: str, args: dict) -> int:
     return event_id
 
 
-def finished(event_id: int, ok: bool, request: dict | None = None) -> None:
-    """request: the chamber request the call returned (worker_tools.public_request), if any."""
+def finished(
+    event_id: int, ok: bool, request: dict | None = None, campaign: dict | None = None
+) -> None:
+    """request: the chamber request the call returned (worker_tools.public_request), if any;
+    campaign: the test campaign it returned (campaign_service.public), if any."""
     with _lock:
         for event in reversed(_events):
             if event["id"] == event_id:
@@ -133,6 +176,9 @@ def finished(event_id: int, ok: bool, request: dict | None = None) -> None:
                 if request and request.get("id") is not None:
                     event["request"] = request["id"]
                     event["request_state"] = request_state(request)
+                if campaign and campaign.get("id") is not None:
+                    event["campaign"] = campaign["id"]
+                    event["campaign_news"] = campaign.get("news")
                 return
 
 
