@@ -190,6 +190,66 @@ def keep_awake(on: bool) -> bool:
     return bool(ctypes.windll.kernel32.SetThreadExecutionState(_KEEP_AWAKE if on else _ALLOW_SLEEP))
 
 
+def demo_chamber_ids(config=None) -> list[int]:
+    """Returns the ids of the registered chambers that are the demo simulator."""
+    port = int((config or load_config())["port"])
+    return [
+        c["id"]
+        for c in chambers_service.list_chambers()
+        if c["protocol"] == "plc"
+        and c["host"] in ("127.0.0.1", "localhost")
+        and int(c["port"]) == port
+    ]
+
+
+def end_demo_campaigns(reason: str, config=None) -> int:
+    """Ends every unfinished campaign on the demo chambers; returns how many."""
+    from app.services import campaign_service as cs
+
+    ids = set(demo_chamber_ids(config))
+    if not ids:
+        return 0
+    ended = 0
+    for campaign in cs.list_campaigns(500):
+        if campaign["chamber_id"] in ids and campaign["state"] not in cs.CLOSED:
+            cs.end_unfinished(campaign["id"], "Insight", reason)
+            ended += 1
+    return ended
+
+
+def simulator_pid_on(port: int) -> int | None:
+    """Returns the PID of the chambersim.exe listening on a local port, or None."""
+    if sys.platform != "win32":
+        return None
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        netstat = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=flags,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in netstat.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[3] == "LISTENING" and parts[1].endswith(f":{port}"):
+            pid = int(parts[4])
+            try:
+                image = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=flags,
+                ).stdout
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return pid if image.lower().startswith('"chambersim.exe"') else None
+    return None
+
+
 class DemoLauncher:
     """Starts and stops the demo."""
 
@@ -329,6 +389,7 @@ class DemoLauncher:
         while time.monotonic() < deadline:
             snap = client.snapshot()
             if snap.connected and snap.values and snap.settings:
+                client.send_text_cmd("sim_reset")
                 client.send_text_cmd(f"sim_speed {config['speed']}")
                 self._set(
                     "connected", "ok", f"{chamber['name']}: {snap.values.get('temp', 0):.1f} °C"
@@ -356,10 +417,25 @@ class DemoLauncher:
             )
 
     def stop(self) -> None:
+        """Ends the demo's campaigns and stops its simulator, when the demo ran this session."""
+        if self.chamber_id is not None:
+            with contextlib.suppress(Exception):
+                end_demo_campaigns("Insight was closed")
         if self.process is not None:
             with contextlib.suppress(OSError):
                 self.process.kill()
             self.process = None
+        elif self.chamber_id is not None:
+            pid = simulator_pid_on(int(load_config()["port"]))
+            if pid is not None:
+                with contextlib.suppress(OSError, subprocess.SubprocessError):
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/F"],
+                        capture_output=True,
+                        timeout=10,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+        self.chamber_id = None
         keep_awake(False)
         self.running = False
         for key in self.steps:

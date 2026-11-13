@@ -111,6 +111,7 @@ class DemoBridge(QObject):
         self._links = links
         self._user = user_name
         self._writing = set()
+        self._session_start = cs.now_iso()
 
     def links(self):
         return self._links or getattr(self._host, "plc_links", None)
@@ -260,9 +261,11 @@ class DemoBridge(QObject):
         return _json(out)
 
     def _campaign_on(self, chamber_id):
+        """Returns the chamber's unfinished campaign, else the last one ended this session."""
         mine = [c for c in cs.list_campaigns(30) if c["chamber_id"] == chamber_id]
         active = [c for c in mine if c["state"] in cs.ACTIVE or c["state"] in (cs.DRAFT,)]
-        return (active or mine or [None])[0]
+        recent = [c for c in mine if (c.get("ended_at") or "") >= self._session_start]
+        return (active or recent or [None])[0]
 
     def _campaign(self, campaign):
         cid = campaign["id"]

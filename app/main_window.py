@@ -1,5 +1,7 @@
 """The main application window."""
 
+import logging
+
 from PySide6.QtCore import QObject, QPoint, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -131,6 +133,12 @@ class DeepVacDesktop(
         self._agent_requests_dialog = None
         self._known_pending_requests = 0
         self._known_open_holds = 0
+        from app.services.demo_launcher import end_demo_campaigns
+
+        try:
+            end_demo_campaigns("Insight was restarted")
+        except Exception:
+            logging.getLogger(__name__).exception("ending the previous session's demo campaigns")
         if settings_service.load_agent_api_enabled():
             self._start_agent_api(show_errors=False)
         self._agent_requests_timer = QTimer(self)

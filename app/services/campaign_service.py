@@ -44,14 +44,14 @@ def _tc(name, tau_min, offset_c, gradient_c, platen_weight, stabilisation=False)
 
 
 GENERIC_THERMOCOUPLES = [
-    _tc("Thermocouple 1", 20, 0.2, 0.3, 0.7, stabilisation=True),
-    _tc("Thermocouple 2", 25, -0.2, -0.3, 0.75, stabilisation=True),
-    _tc("Thermocouple 3", 15, 0.3, 0.4, 0.6),
-    _tc("Thermocouple 4", 12, -0.1, -0.1, 0.9),
+    _tc("Temperature 1", 20, 0.2, 0.3, 0.7, stabilisation=True),
+    _tc("Temperature 2", 25, -0.2, -0.3, 0.75, stabilisation=True),
+    _tc("Temperature 3", 15, 0.3, 0.4, 0.6, stabilisation=True),
+    _tc("Temperature 4", 30, -0.1, -0.1, 0.8, stabilisation=True),
 ]
 
 DEFAULT_PACK = {
-    "pack_version": 2,
+    "pack_version": 3,
     "name": "ECSS-style demo pack",
     "standard": "ECSS-E-ST-10-03",
     "note": (
@@ -88,45 +88,21 @@ DEFAULT_PACK = {
             "name": "6U CubeSat",
             "op_min_c": -10.0,
             "op_max_c": 45.0,
-            "thermocouples": [
-                _tc("+X solar panel", 15, 0.6, 0.8, 0.3),
-                _tc("Battery pack", 30, -0.3, -0.4, 0.8, stabilisation=True),
-                _tc("OBC board", 22, 0.3, 0.3, 0.7, stabilisation=True),
-                _tc("−Z structure", 18, -0.2, -0.2, 0.9),
-            ],
         },
         {
             "name": "Reaction Wheel Assembly",
             "op_min_c": -20.0,
             "op_max_c": 50.0,
-            "thermocouples": [
-                _tc("Wheel housing", 25, 0.3, 0.3, 0.7),
-                _tc("Motor driver", 20, 0.5, 0.4, 0.8, stabilisation=True),
-                _tc("Bearing", 30, -0.2, -0.3, 0.75, stabilisation=True),
-                _tc("Mounting flange", 12, -0.1, -0.1, 0.95),
-            ],
         },
         {
             "name": "Optical Camera Payload",
             "op_min_c": -15.0,
             "op_max_c": 40.0,
-            "thermocouples": [
-                _tc("Lens barrel", 25, 0.4, 0.5, 0.5, stabilisation=True),
-                _tc("Focal plane", 30, -0.3, -0.4, 0.6, stabilisation=True),
-                _tc("Electronics box", 22, 0.3, 0.2, 0.8),
-                _tc("Baseplate", 10, -0.1, -0.1, 0.95),
-            ],
         },
         {
             "name": "Power Control and Distribution Unit",
             "op_min_c": -25.0,
             "op_max_c": 55.0,
-            "thermocouples": [
-                _tc("Power board", 22, 0.6, 0.5, 0.75, stabilisation=True),
-                _tc("DC/DC converter", 18, 0.8, 0.6, 0.8, stabilisation=True),
-                _tc("Chassis", 15, -0.2, -0.3, 0.85),
-                _tc("Baseplate", 10, -0.1, -0.1, 0.95),
-            ],
         },
     ],
     "vacuum": "auto",
@@ -482,6 +458,8 @@ def load_pack():
             merged["articles"] = copy.deepcopy(DEFAULT_PACK["articles"])
         if float(pack.get("stabilise_timeout_min", 0)) < DEFAULT_PACK["stabilise_timeout_min"]:
             merged["stabilise_timeout_min"] = DEFAULT_PACK["stabilise_timeout_min"]
+        for article in merged.get("articles") or []:
+            article.pop("thermocouples", None)
         merged["pack_version"] = DEFAULT_PACK["pack_version"]
     return merged
 
@@ -491,10 +469,9 @@ def article_of(pack, name):
     return next((a for a in pack.get("articles") or [] if a.get("name") == name), None)
 
 
-def thermocouples_of(pack, name):
-    """Returns an article's thermocouples from the pack."""
-    article = article_of(pack, name) or {}
-    return copy.deepcopy(article.get("thermocouples") or GENERIC_THERMOCOUPLES)
+def thermocouples_of(pack, name=None):
+    """Returns the test-article temperatures of the pack, the same for every article."""
+    return copy.deepcopy(pack.get("thermocouples") or GENERIC_THERMOCOUPLES)
 
 
 def sci(value):
@@ -623,11 +600,7 @@ def derive_spec(requirement, pack, limits, overrides=None):
             "vent_band_c": "Deepvac chamber rule",
             "vacuum_start_hpa": clause,
             "pump_timeout_min": "Deepvac chamber rule",
-            "thermocouples": (
-                f"Test procedure of the {requirement['article']}"
-                if article_of(pack, requirement["article"])
-                else "Generic: the pack has no procedure for this test article"
-            ),
+            "thermocouples": "Deepvac chamber configuration",
             "stabilisation": f"Test procedure and {clause}",
             "pressure_rule": "Test procedure: approved with the plan",
             "sensor_rule": "Deepvac chamber rule",
@@ -742,17 +715,11 @@ def spec_rows(spec):
         rows.append(("Thermal cycles", str(spec["cycles"]), s["cycles"]))
     tcs = spec.get("thermocouples")
     if tcs:
-        rows.append(
-            (
-                "Thermocouples",
-                ", ".join(t["name"] for t in tcs),
-                s.get("thermocouples", "Test procedure"),
-            )
-        )
         stab = spec.get("stabilisation") or DEFAULT_PACK["stabilisation"]
         names = stabilisation_names(spec)
+        which = "Every valid test-article temperature" if len(names) == len(tcs) else _and(names)
         stabilisation = (
-            f"{_and(names)} within ±{spec['band_c']:g} °C of the plateau, changing less than "
+            f"{which} within ±{spec['band_c']:g} °C of the plateau, changing less than "
             f"{stab['rate_c_per_h']:g} °C/h over {stab['window_min']:g} min: then the dwell starts"
         )
         stab_from = s.get("stabilisation", s["band_c"])
@@ -805,7 +772,7 @@ def spec_rows(spec):
                 f"Open (outside {sensor['open_low_c']:g} … {sensor['open_high_c']:g} °C), frozen "
                 f"(unchanged for {sensor['frozen_min']:g} min) or spiking ({sensor['spikes']} jumps "
                 f"over {sensor['spike_c']:g} °C in {sensor['spike_window_min']:g} min): marked "
-                "invalid. Only a person excludes a stabilisation sensor",
+                "invalid. Only a person excludes a temperature from the stabilisation criterion",
                 s.get("sensor_rule", "Deepvac chamber rule"),
             )
         )
@@ -813,7 +780,7 @@ def spec_rows(spec):
         (
             "Sensors",
             (
-                f"Shroud (the PLC's control sensor), platen and {len(tcs)} thermocouples on the "
+                f"Shroud (the PLC's control sensor), platen and {len(tcs)} temperatures on the "
                 "test article"
                 if tcs
                 else "Chamber temperature (PLC)"
@@ -977,6 +944,34 @@ def cancel(campaign_id, who, reason=""):
     finally:
         conn.close()
     record(campaign_id, who, "Campaign cancelled", reason)
+    return require(campaign_id)
+
+
+def end_unfinished(campaign_id, who, reason):
+    """Ends an unfinished campaign at once: cancelled before it started, aborted after."""
+    campaign = require(campaign_id)
+    state = campaign["state"]
+    if state in CLOSED:
+        return campaign
+    ended = CANCELLED if state in (DRAFT, APPROVAL) else ABORTED
+    if not update(campaign_id, state, state=ended, ended_at=now_iso(), end_reason=reason):
+        return require(campaign_id)
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE holds SET decided_at = ?, decided_by = ?, choice = 'cancelled', applied = 1 "
+            "WHERE campaign_id = ? AND decided_at IS NULL",
+            (now_iso(), who, int(campaign_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    record(
+        campaign_id,
+        who,
+        "Campaign cancelled" if ended == CANCELLED else "Campaign aborted",
+        reason,
+    )
     return require(campaign_id)
 
 
