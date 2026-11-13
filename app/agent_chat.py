@@ -1,34 +1,4 @@
-"""Chat with the DeepVac crew (the n8n agent orchestration, ../agents).
-
-A round button floats at the bottom right of the main window; it opens a
-chat panel above it. Messages go to the crew workflow's chat webhook
-(n8n Chat Trigger, public in "webhook" mode): POST
-{"action": "sendMessage", "sessionId", "chatInput"}. The session id keeps
-the Professor's memory of this conversation; "New chat" starts a fresh one.
-
-While the crew works the panel shows its progress:
-- the answer streams in as the Professor writes it: the Chat node in
-  "streaming" mode answers with one JSON object per line
-  ({"type": "begin" | "item" | "end" | "error", "content", "metadata":
-  {"nodeName"}}), and the begin / end of each agent become progress lines;
-  a non-streaming {"output": text} answer is accepted too;
-- what each agent is doing, from the agent API's activity feed
-  (GET /activity, app/api/activity.py): "Analyst: comparing runs #12, #13".
-When the answer is complete the steps stay above it as a short summary.
-
-Chamber actions the crew asks for still need approving in Agent Requests:
-the chat only talks. It follows the requests its crew made (the activity
-feed names them) through GET /requests: when one is decided, sent, or its
-job ends, a notice appears here and, unless the crew already saw that state
-through its own tools, the chat sends the crew an update in the same session
-(UPDATE_PREFIX), so the Professor can tell the user what came of it.
-Test campaigns the Professor drafted are followed the same way (GET
-/campaigns): the operator's approval, every hold point (the Professor can
-recommend an option), and the end of the campaign (it issues the report).
-
-Chart images the analyst exported (export_chart) and the answer links to are
-shown under it as thumbnails; a click opens the file.
-"""
+"""Chat with the Deepvac Agents."""
 
 import json
 import re
@@ -54,31 +24,38 @@ from PySide6.QtWidgets import (
 
 from app.api.activity import request_state
 from app.common import _svg_icon
-from app.services import settings_service
+from app.services import ai_mode, local_llm, settings_service
 
-REPLY_TIMEOUT_MS = 5 * 60 * 1000  # the crew can take a while: the Professor waits for both agents
+REPLY_TIMEOUT_MS = 5 * 60 * 1000
 ACTIVITY_POLL_MS = 1000
 REQUEST_POLL_MS = 3000
-UPDATE_PREFIX = "[Update from DeepVac Insight, not typed by the user]"
-CLOSED = ("rejected", "failed", "expired")  # request statuses after which nothing happens
-MARGIN = 26  # from the window corner (clear of the size grip)
+UPDATE_PREFIX = "[Update from Deepvac Insight, not typed by the user]"
+CLOSED = ("rejected", "failed", "expired")
+MARGIN = 26
 PANEL_SIZE = QSize(400, 560)
 
-ANSWER_NODE = (
-    "Professor"  # the orchestrator: its text is the answer; the specialists' text is for it
-)
+ANSWER_NODE = "Professor"
 AGENT_LABELS = {"Professor": "Professor", "analyst": "Analyst", "worker": "Worker"}
 MARKS = {"running": "…", "done": "✓", "error": "✗"}
-# local image files an answer links to: file:///C:/... or C:\...
 IMAGE_LINK = re.compile(
     r"(file:///[^\s)\]>\"']+?\.(?:png|jpe?g|bmp)|[A-Za-z]:[\\/][^\n)\]>\"']+?\.(?:png|jpe?g|bmp))",
     re.IGNORECASE,
 )
 MAX_THUMBNAILS = 4
+LOCAL_TIMEOUT_MS = 120 * 1000
+LOCAL_HISTORY = 8
+LOCAL_SYSTEM = (
+    "You are the Professor of the Deepvac Agents, running offline on this PC (a small local "
+    "model). You help with a thermal vacuum chamber and its test campaigns. Answer in the user's "
+    "language, briefly and plainly, only from the context below and the conversation; if the "
+    "context doesn't say, say you don't know. You can't change anything: chamber changes and "
+    "decision point decisions are made by people in Deepvac Insight (AI Agents page, Agent Requests).\n\n"
+    "Context from Deepvac Insight, now:\n"
+)
 
 
 class ImageThumbnail(QLabel):
-    """A chart image in the chat; a click opens the file."""
+    """A chart image in the chat that opens the file on click."""
 
     def __init__(self, path: Path, width: int, parent=None):
         super().__init__(parent)
@@ -94,10 +71,11 @@ class ImageThumbnail(QLabel):
 
 
 class AgentChatPanel(QFrame):
-    def __init__(self, api_source=None, parent=None):
-        """api_source: callable returning (agent API base URL, bearer token), or None, for
-        the activity feed; without it the progress shows the agents only."""
+    def __init__(self, api_source=None, parent=None, context_source=None):
+        """Chat panel; api_source returns the agent API base URL and token for the activity feed."""
         super().__init__(parent)
+        self._context_source = context_source
+        self._local_history = []
         self.setObjectName("chatPanel")
         self.setFixedSize(PANEL_SIZE)
         self._api_source = api_source
@@ -108,7 +86,7 @@ class AgentChatPanel(QFrame):
         self._streamed = False
         self._answer_label = None
         self._answer_text = ""
-        self._progress = OrderedDict()  # key -> {"text", "status"}
+        self._progress = OrderedDict()
         self._progress_label = None
         self._activity_reply = None
         self._activity_since = 0.0
@@ -117,9 +95,9 @@ class AgentChatPanel(QFrame):
         self._working = False
         self._tick_timer = QTimer(self)
         self._tick_timer.timeout.connect(self._tick)
-        self._wrap_up = False  # the turn ended: one last look at the activity, then updates
+        self._wrap_up = False
         self._final_activity = None
-        self._requests = {}  # request id -> {"request", "seen", "told"}
+        self._requests = {}
         self._requests_reply = None
         self._requests_timer = QTimer(self)
         self._requests_timer.timeout.connect(self._poll_requests)
@@ -131,7 +109,7 @@ class AgentChatPanel(QFrame):
         self._add_message(
             "agent",
             self.tr(
-                "Hi! I'm the Professor of the DeepVac crew. Ask me about past experiments, "
+                "Hi! I'm the Professor of the Deepvac Agents. Ask me about past experiments, "
                 "the chamber now, or what to try next. Chamber changes always wait for your "
                 "approval in Agent Requests."
             ),
@@ -148,7 +126,7 @@ class AgentChatPanel(QFrame):
         head.setContentsMargins(14, 10, 8, 10)
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        title = QLabel(self.tr("DeepVac Crew"))
+        title = QLabel(self.tr("Deepvac Agents"))
         title.setObjectName("chatTitle")
         self.subtitle = QLabel(self.tr("Professor · Worker · Analyst"))
         self.subtitle.setObjectName("chatSubtitle")
@@ -157,7 +135,7 @@ class AgentChatPanel(QFrame):
         head.addLayout(titles, 1)
         new_btn = QPushButton(self.tr("New chat"))
         new_btn.setObjectName("chatHeaderButton")
-        new_btn.setToolTip(self.tr("Start a new conversation (the crew forgets this one)"))
+        new_btn.setToolTip(self.tr("Start a new conversation (the agent forgets this one)"))
         new_btn.clicked.connect(self.new_chat)
         head.addWidget(new_btn)
         close_btn = QPushButton()
@@ -188,7 +166,7 @@ class AgentChatPanel(QFrame):
         foot.setContentsMargins(10, 10, 10, 10)
         self.input = QLineEdit()
         self.input.setObjectName("chatInput")
-        self.input.setPlaceholderText(self.tr("Ask the crew…"))
+        self.input.setPlaceholderText(self.tr("Ask the agent…"))
         self.input.returnPressed.connect(self.send)
         self.send_btn = QPushButton(self.tr("Send"))
         self.send_btn.setObjectName("primaryButton")
@@ -197,17 +175,16 @@ class AgentChatPanel(QFrame):
         foot.addWidget(self.send_btn)
         root.addWidget(footer)
 
-    # ── conversation ─────────────────────────────────────────────────────────
-
     def new_chat(self):
         if self._reply is not None:
             self._reply.abort()
         self._session_id = str(uuid.uuid4())
-        self._requests = {}  # the new conversation's crew doesn't know them
+        self._local_history = []
+        self._requests = {}
         self._requests_timer.stop()
         self._campaigns = {}
         self._campaigns_timer.stop()
-        while self._messages.count() > 1:  # keep the stretch
+        while self._messages.count() > 1:
             item = self._messages.takeAt(1)
             if item.widget():
                 item.widget().deleteLater()
@@ -221,7 +198,30 @@ class AgentChatPanel(QFrame):
         self._add_message("user", text)
         self._post(text)
 
+    def ask(self, text):
+        """Sends a message as if typed."""
+        if self._reply is not None:
+            return False
+        self._add_message("user", text)
+        self._post(text)
+        return True
+
+    def follow_campaign(self, campaign_id):
+        """Follows a campaign started outside the chat."""
+        self._track_campaign(campaign_id, None)
+
+    def refresh_mode(self):
+        offline = ai_mode.is_offline()
+        self.subtitle.setText(
+            self.tr("Offline: local model on this PC")
+            if offline
+            else self.tr("Professor · Worker · Analyst")
+        )
+
     def _post(self, text):
+        if ai_mode.is_offline():
+            self._post_local(text)
+            return
         url = settings_service.load_agent_chat_url()
         request = QNetworkRequest(QUrl(url))
         request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
@@ -231,6 +231,63 @@ class AgentChatPanel(QFrame):
         self._reply = self._network.post(request, json.dumps(body).encode("utf-8"))
         self._reply.readyRead.connect(self._on_ready_read)
         self._reply.finished.connect(self._on_reply)
+
+    def _post_local(self, text):
+        """Asks the local model offline."""
+        context = ""
+        if self._context_source is not None:
+            try:
+                context = self._context_source() or ""
+            except Exception as exc:
+                context = f"(context unavailable: {exc})"
+        messages = [{"role": "system", "content": LOCAL_SYSTEM + context}]
+        messages += self._local_history[-LOCAL_HISTORY:]
+        messages.append({"role": "user", "content": text})
+        self._local_history.append({"role": "user", "content": text})
+        request = QNetworkRequest(QUrl(local_llm.base_url() + "/chat/completions"))
+        request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
+        request.setTransferTimeout(LOCAL_TIMEOUT_MS)
+        body = {"model": "local", "messages": messages, "temperature": 0.3, "max_tokens": 500}
+        self._start_turn()
+        self._progress["local"] = {
+            "text": self.tr("Local model: reading Insight's context"),
+            "status": "running",
+        }
+        self._reply = self._network.post(request, json.dumps(body).encode("utf-8"))
+        self._reply.finished.connect(self._on_local_reply)
+
+    def _on_local_reply(self):
+        reply = self._reply
+        self._reply = None
+        if reply is None:
+            return
+        reply.deleteLater()
+        raw = bytes(reply.readAll()).decode("utf-8", errors="replace")
+        cancelled = reply.error() == QNetworkReply.OperationCanceledError
+        if not cancelled:
+            self.show_local_reply(reply.error() == QNetworkReply.NoError, raw, reply.errorString())
+        self._progress.pop("local", None)
+        self._set_working(False)
+
+    def show_local_reply(self, ok, raw, error_text=""):
+        """Shows the local model's answer or error."""
+        text = None
+        if ok:
+            try:
+                text = json.loads(raw)["choices"][0]["message"]["content"].strip()
+            except (ValueError, KeyError, IndexError, TypeError):
+                text = None
+        if text:
+            self._local_history.append({"role": "assistant", "content": text})
+            self._add_message("agent", text)
+            return
+        self._add_message(
+            "error",
+            self.tr(
+                "The local model at {0} didn't answer ({1}). Offline AI starts it when chosen "
+                "(gear menu → AI Mode); the first start takes a minute."
+            ).format(local_llm.base_url(), error_text or self.tr("empty answer")),
+        )
 
     def _start_turn(self):
         self._buffer = b""
@@ -247,7 +304,7 @@ class AgentChatPanel(QFrame):
             self._consume(self._reply)
 
     def _consume(self, reply):
-        """Reads what arrived; streamed answers are handled line by line as they come."""
+        """Reads the streamed answer as it arrives."""
         data = bytes(reply.readAll())
         if not data:
             return
@@ -270,13 +327,12 @@ class AgentChatPanel(QFrame):
             self.handle_event(event)
 
     def handle_event(self, event):
-        """One streamed event from the crew's chat webhook (separate for tests)."""
+        """Handles one streamed event from the chat webhook."""
         kind = event.get("type")
         node = (event.get("metadata") or {}).get("nodeName") or ""
-        label = AGENT_LABELS.get(node, node or self.tr("Crew"))
+        label = AGENT_LABELS.get(node, node or self.tr("Agent"))
         key = f"node:{node}"
         if kind == "begin":
-            # an agent begins once per model call: its line keeps the place it first got
             if key in self._progress:
                 self._progress[key]["status"] = "running"
             else:
@@ -298,7 +354,7 @@ class AgentChatPanel(QFrame):
                     QTimer.singleShot(0, self._scroll_to_end)
         elif kind == "error":
             self._add_message(
-                "error", str(event.get("content") or self.tr("The crew reported an error."))
+                "error", str(event.get("content") or self.tr("The agent reported an error."))
             )
         self._render_progress()
 
@@ -318,7 +374,7 @@ class AgentChatPanel(QFrame):
         if not cancelled:
             if self._streamed and ok:
                 if not self._answer_text:
-                    self._add_message("agent", self.tr("(The crew sent an empty answer.)"))
+                    self._add_message("agent", self.tr("(The agent sent an empty answer.)"))
                 self.show_images(self._answer_text)
             else:
                 raw = self._raw.decode("utf-8", errors="replace")
@@ -326,7 +382,7 @@ class AgentChatPanel(QFrame):
         self._set_working(False)
 
     def show_reply(self, ok, status, raw, error_text=""):
-        """Turns a non-streamed answer or an error into a message (separate for tests)."""
+        """Shows a non-streamed answer or an error."""
         if ok:
             try:
                 data = json.loads(raw)
@@ -335,12 +391,12 @@ class AgentChatPanel(QFrame):
             if isinstance(data, list) and data:
                 data = data[0]
             text = data.get("output") if isinstance(data, dict) else None
-            self._add_message("agent", text or self.tr("(The crew sent an empty answer.)"))
+            self._add_message("agent", text or self.tr("(The agent sent an empty answer.)"))
             self.show_images(text or "")
             return
         if status == 404:
             hint = self.tr(
-                "The crew's chat isn't available. Check that n8n is running and the DeepVac Crew "
+                "The agent's chat isn't available. Check that n8n is running and the Deepvac Agents "
                 "workflow is published (agents/README.md)."
             )
         elif status is None:
@@ -348,26 +404,24 @@ class AgentChatPanel(QFrame):
                 settings_service.load_agent_chat_url(), error_text
             )
         else:
-            hint = self.tr("The crew answered with an error ({0}): {1}").format(
+            hint = self.tr("The agent answered with an error ({0}): {1}").format(
                 status, raw[:300] or error_text
             )
         self._add_message("error", hint)
-
-    # ── progress ─────────────────────────────────────────────────────────────
 
     def _set_working(self, working):
         self._working = working
         self.send_btn.setEnabled(not working)
         if working:
             self._started = time.monotonic()
-            self._progress_label = self._add_message("steps", self.tr("The crew is working…"))
+            self._progress_label = self._add_message("steps", self.tr("The agent is working…"))
             self._tick_timer.start(ACTIVITY_POLL_MS)
             return
         self._tick_timer.stop()
         self._render_progress()
         self._wrap_up = True
         if self._activity_reply is None:
-            self._poll_activity()  # its answer (or none) closes the summary, then _maybe_send_update
+            self._poll_activity()
 
     def _close_summary(self):
         """The steps stay above the answer as a summary, once the last activity is in."""
@@ -392,7 +446,7 @@ class AgentChatPanel(QFrame):
         lines = []
         if self._working:
             seconds = int(time.monotonic() - self._started)
-            lines.append(self.tr("The crew is working… {0} s").format(seconds))
+            lines.append(self.tr("The agent is working… {0} s").format(seconds))
         else:
             lines.append(self.tr("Steps"))
         for entry in self._progress.values():
@@ -433,7 +487,7 @@ class AgentChatPanel(QFrame):
             return
         reply.deleteLater()
         events = None
-        if reply.error() == QNetworkReply.NoError:  # else no agent API: the agents only
+        if reply.error() == QNetworkReply.NoError:
             try:
                 events = json.loads(bytes(reply.readAll()).decode("utf-8")).get("events", [])
             except ValueError:
@@ -444,7 +498,7 @@ class AgentChatPanel(QFrame):
             if reply is self._final_activity:
                 self._finish_wrap_up()
             else:
-                self._poll_activity()  # asked before the turn ended: look once more
+                self._poll_activity()
 
     def _finish_wrap_up(self):
         if self._wrap_up:
@@ -454,7 +508,7 @@ class AgentChatPanel(QFrame):
             self._maybe_send_update()
 
     def show_activity(self, events):
-        """Agent API activity events (app/api/activity.py) as progress lines (separate for tests)."""
+        """Shows agent activity events as progress lines."""
         for event in events:
             key = f"tool:{event['id']}"
             self._progress[key] = {
@@ -467,10 +521,8 @@ class AgentChatPanel(QFrame):
                 self._track_campaign(event["campaign"], event.get("campaign_news"))
         self._render_progress()
 
-    # ── the crew's chamber requests ──────────────────────────────────────────
-
     def _track(self, request_id, told):
-        """A request the crew made or checked; told: the state its tool reported."""
+        """Tracks a request the agent made or checked."""
         entry = self._requests.setdefault(
             int(request_id), {"request": None, "seen": None, "told": None}
         )
@@ -512,8 +564,7 @@ class AgentChatPanel(QFrame):
         self.show_requests(requests)
 
     def show_requests(self, requests):
-        """Current state of followed requests (GET /requests): notices for what changed, then an
-        update to the crew if it doesn't know yet (separate for tests)."""
+        """Shows what changed in the followed requests and tells the agent."""
         for request in requests:
             entry = self._requests.get(int(request["id"]))
             if entry is None:
@@ -530,9 +581,11 @@ class AgentChatPanel(QFrame):
         self._maybe_send_update()
 
     def _maybe_send_update(self):
-        """Tells the crew, as a message in this conversation, what it doesn't know yet."""
+        """Tells the agent, as a message in this conversation, what it doesn't know yet."""
         if self._working or self._reply is not None or self._wrap_up:
-            return  # after the turn
+            return
+        if ai_mode.is_offline():
+            return
         news = []
         for entry in self._requests.values():
             request = entry["request"]
@@ -546,7 +599,7 @@ class AgentChatPanel(QFrame):
             campaign = entry["campaign"]
             if campaign is None or entry["seen"] == entry["told"]:
                 continue
-            text = describe_campaign(campaign, for_crew=True)
+            text = describe_campaign(campaign, for_agent=True)
             if text:
                 news.append(text)
             entry["told"] = entry["seen"]
@@ -556,7 +609,7 @@ class AgentChatPanel(QFrame):
             self._post("\n".join(lines))
 
     def _track_campaign(self, campaign_id, told):
-        """Follows a campaign the crew drafted or checked."""
+        """Follows a campaign the agent drafted or checked."""
         entry = self._campaigns.setdefault(
             int(campaign_id), {"campaign": None, "seen": None, "told": None}
         )
@@ -598,7 +651,7 @@ class AgentChatPanel(QFrame):
         self.show_campaigns(campaigns)
 
     def show_campaigns(self, campaigns):
-        """Shows notices for followed campaigns that changed and updates the crew."""
+        """Shows notices for followed campaigns that changed and updates the agent."""
         for campaign in campaigns:
             entry = self._campaigns.get(int(campaign["id"]))
             if entry is None:
@@ -614,7 +667,7 @@ class AgentChatPanel(QFrame):
         self._maybe_send_update()
 
     def show_images(self, text):
-        """Thumbnails of the local images an answer links to (separate for tests)."""
+        """Shows thumbnails of the images an answer links to."""
         shown = []
         for match in IMAGE_LINK.findall(text or ""):
             link = match.strip()
@@ -637,8 +690,6 @@ class AgentChatPanel(QFrame):
         if shown:
             QTimer.singleShot(0, self._scroll_to_end)
         return shown
-
-    # ── messages ─────────────────────────────────────────────────────────────
 
     def _add_message(self, role, text):
         bubble = QLabel(text)
@@ -674,7 +725,7 @@ class AgentChatPanel(QFrame):
         bar.setValue(bar.maximum())
 
     def messages(self):
-        """(role, text) of the conversation shown, oldest first (for tests)."""
+        """Returns the conversation as (role, text) pairs."""
         roles = {
             "chatUserMsg": "user",
             "chatAgentMsg": "agent",
@@ -693,7 +744,7 @@ class AgentChatPanel(QFrame):
 
 
 def _same_news(state):
-    """A job that is starting and one that is running are the same news for the crew."""
+    """A job that is starting and one that is running are the same news for the agent."""
     return state.replace("/starting", "/running") if state else state
 
 
@@ -707,7 +758,7 @@ def _is_open(request):
 
 
 def describe_request(request):
-    """What became of a request, in a sentence (None while nothing worth telling happened)."""
+    """Describes what became of a request, or None."""
     status, job = request.get("status"), request.get("job_state")
     head = f"Request {request['id']} ({request.get('summary', '')})"
     by = request.get("decided_by") or "the operator"
@@ -741,8 +792,8 @@ def _campaign_open(campaign):
     return True
 
 
-def describe_campaign(campaign, for_crew=False):
-    """Status of a campaign in a sentence or two; None when there is nothing to tell."""
+def describe_campaign(campaign, for_agent=False):
+    """Describes a campaign's status, or None."""
     head = f"Campaign {campaign['id']} ({campaign.get('title', '')})"
     state = campaign.get("state")
     hold = campaign.get("hold_point")
@@ -750,21 +801,29 @@ def describe_campaign(campaign, for_crew=False):
     where = f" (step {step['index']}/{step['of']}: {step['label']})" if step else ""
     if hold:
         options = ", ".join(f"{o['label']} [{o['key']}]" for o in hold.get("options", []))
-        text = f"{head}: hold point: {hold['title']} {hold.get('detail', '')} Options: {options}."
-        if for_crew and hold.get("kind") in ("anomaly", "stabilise", "interrupted"):
+        text = (
+            f"{head}: decision point: {hold['title']} {hold.get('detail', '')} Options: {options}."
+        )
+        if for_agent and hold.get("kind") in (
+            "oscillation",
+            "anomaly",
+            "stabilise",
+            "interrupted",
+            "pump_slow",
+        ):
             text += (
                 " Check the data (get_campaign, the analyst for the recording) and recommend one option "
-                "with recommend; the operator decides in the Campaigns page."
+                "with recommend; the operator decides in the AI Agents page."
             )
-        elif for_crew and hold.get("kind") == "approval":
-            text += " The operator decides in the Campaigns page."
+        elif for_agent and hold.get("kind") == "approval":
+            text += " The operator decides in the AI Agents page."
         return text
     if state in ("running", "holding"):
         return f"{head}: running{where}."
     if state in ("completed", "aborted") and not campaign.get("report_issued_at"):
         reason = campaign.get("end_reason") or state
         text = f"{head}: {state} ({reason})."
-        if for_crew:
+        if for_agent:
             text += " Issue the as-run report: get_report_facts, then issue_report with a summary."
         return text
     if state == "declined":
@@ -776,7 +835,7 @@ def describe_campaign(campaign, for_crew=False):
 class AgentChat(QObject):
     """The floating chat button and its panel, kept at the bottom right of `host`."""
 
-    def __init__(self, host: QWidget, api_source=None):
+    def __init__(self, host: QWidget, api_source=None, context_source=None):
         super().__init__(host)
         self.host = host
         self.button = QPushButton(host)
@@ -784,14 +843,21 @@ class AgentChat(QObject):
         self.button.setFixedSize(56, 56)
         self.button.setIcon(_svg_icon("chat-dots", "#ffffff", 26))
         self.button.setIconSize(QSize(26, 26))
-        self.button.setToolTip(self.tr("Chat with the DeepVac crew"))
+        self.button.setToolTip(self.tr("Chat with the Deepvac Agents"))
         self.button.setCursor(Qt.PointingHandCursor)
         self.button.clicked.connect(self.toggle)
-        self.panel = AgentChatPanel(api_source, host)
+        self.panel = AgentChatPanel(api_source, host, context_source=context_source)
+        self.panel.refresh_mode()
         self.panel.hide()
         host.installEventFilter(self)
         self.reposition()
         self.button.show()
+
+    def set_available(self, available):
+        """Shown on every page but AI Agents, which has the agents' feed of its own."""
+        self.button.setVisible(available)
+        if not available:
+            self.panel.hide()
 
     def toggle(self):
         self.panel.setVisible(not self.panel.isVisible())
@@ -819,7 +885,7 @@ class AgentChat(QObject):
         url, ok = QInputDialog.getText(
             parent,
             self.tr("Agent Chat"),
-            self.tr("Chat webhook of the DeepVac Crew workflow (n8n):"),
+            self.tr("Chat webhook of the Deepvac Agents workflow (n8n):"),
             text=settings_service.load_agent_chat_url(),
         )
         if ok and url.strip():

@@ -1,5 +1,4 @@
-"""Chat bubble with the agent crew (app/agent_chat.py): the panel opens from the
-button and talks to the crew's chat webhook (here a stand-in HTTP server)."""
+"""Tests of the agent chat panel."""
 
 import json
 import threading
@@ -15,7 +14,7 @@ pytestmark = pytest.mark.ui
 
 
 @pytest.fixture
-def crew_webhook():
+def agent_webhook():
     received = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -61,8 +60,8 @@ def test_button_opens_the_panel_in_the_corner(chat):
     assert not chat.panel.isVisible()
 
 
-def test_sends_to_the_crew_and_shows_the_answer(chat, qtbot, crew_webhook, monkeypatch):
-    url, received = crew_webhook
+def test_sends_to_the_agent_and_shows_the_answer(chat, qtbot, agent_webhook, monkeypatch):
+    url, received = agent_webhook
     monkeypatch.setattr(settings_service, "load_agent_chat_url", lambda: url)
     chat.toggle()
     chat.panel.input.setText("compare the last runs")
@@ -80,20 +79,20 @@ def test_sends_to_the_crew_and_shows_the_answer(chat, qtbot, crew_webhook, monke
     chat.panel.input.setText("and the one before?")
     chat.panel.send()
     qtbot.waitUntil(lambda: len(received) == 2, timeout=10_000)
-    assert received[1]["sessionId"] == session  # same conversation: the crew remembers it
+    assert received[1]["sessionId"] == session
     qtbot.waitUntil(lambda: chat.panel._reply is None, timeout=10_000)
     chat.panel.new_chat()
     assert chat.panel._session_id != session
 
 
-def test_explains_when_the_crew_is_not_there(chat):
+def test_explains_when_the_agent_is_not_there(chat):
     chat.panel.show_reply(False, 404, "", "Not Found")
     role, text = chat.panel.messages()[-1]
     assert role == "error" and "published" in text
 
 
 def _streaming_server(events, delay_s=0.15):
-    """A stand-in for the crew's chat webhook in "streaming" mode: one JSON event per line."""
+    """Fake streaming chat webhook."""
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -126,14 +125,12 @@ def _event(kind, node, content=None):
     return event
 
 
-def test_streams_the_answer_and_shows_the_crew_working(chat, qtbot, monkeypatch):
+def test_streams_the_answer_and_shows_the_agent_working(chat, qtbot, monkeypatch):
     events = [
         _event("begin", "Professor"),
         _event("end", "Professor"),
         _event("begin", "analyst"),
-        _event(
-            "item", "analyst", "Run #12 has the lowest tail MAE."
-        ),  # for the Professor, not shown
+        _event("item", "analyst", "Run #12 has the lowest tail MAE."),
         _event("end", "analyst"),
         _event("begin", "Professor"),
         _event("item", "Professor", "**Run #12** "),
@@ -154,11 +151,11 @@ def test_streams_the_answer_and_shows_the_crew_working(chat, qtbot, monkeypatch)
     server.shutdown()
 
     roles = [role for role, _ in panel.messages()]
-    assert roles[-3:] == ["user", "steps", "agent"]  # the steps stay above the answer
+    assert roles[-3:] == ["user", "steps", "agent"]
     steps = panel.messages()[-2][1]
     assert "✓ Analyst: working" in steps and "Professor" in steps and "working…" not in steps
     answer = panel.messages()[-1][1]
-    assert answer == "**Run #12** settled best."  # the specialist's text is not part of it
+    assert answer == "**Run #12** settled best."
 
 
 def test_activity_feed_adds_what_each_agent_does(chat):
@@ -184,16 +181,15 @@ def test_activity_feed_adds_what_each_agent_does(chat):
     assert "✓ Analyst: reading the summary of run #12" in steps
     assert "… Worker: reading the chamber's live status" in steps
     panel._set_working(False)
-    assert "… " not in panel.messages()[-1][1]  # all marked done in the summary
+    assert "… " not in panel.messages()[-1][1]
 
 
-def test_tells_the_crew_what_became_of_its_requests(chat, qtbot, crew_webhook, monkeypatch):
+def test_tells_the_agent_what_became_of_its_requests(chat, qtbot, agent_webhook, monkeypatch):
     from app.agent_chat import UPDATE_PREFIX
 
-    url, received = crew_webhook
+    url, received = agent_webhook
     monkeypatch.setattr(settings_service, "load_agent_chat_url", lambda: url)
     panel = chat.panel
-    # the worker filed request 7 and saw it pending; it saw request 8 already sent
     panel.show_activity(
         [
             {"id": 1, "agent": "Worker", "text": "requesting 30 °C", "status": "done"}
@@ -218,11 +214,10 @@ def test_tells_the_crew_what_became_of_its_requests(chat, qtbot, crew_webhook, m
     assert (
         "Request 7 (Set PLC to 30 °C, hold 10 min): approved by Ana; the job is running" in update
     )
-    assert "Request 8" not in update  # the crew already knows
+    assert "Request 8" not in update
     qtbot.waitUntil(lambda: panel._reply is None and not panel._wrap_up, timeout=5000)
 
-    panel.show_requests([request, known])  # nothing new: nothing sent
-    # the job ends while the crew answers something else: told once that turn is over
+    panel.show_requests([request, known])
     panel.input.setText("and now?")
     panel.send()
     panel.show_requests([{**request, "job_state": "finished"}, known])
@@ -255,16 +250,16 @@ def test_exported_charts_show_as_thumbnails(chat, tmp_path):
     assert panel.messages()[-1] == (
         "image",
         str(path),
-    )  # once, the pdf and the missing file skipped
+    )
     assert [r for r, _ in panel.messages()].count("image") == 1
     thumb = panel.findChildren(ImageThumbnail)[0]
     assert thumb.pixmap().width() == int(400 * 0.82)
 
 
-def test_tells_the_crew_about_its_campaigns_hold_points(chat, qtbot, crew_webhook, monkeypatch):
+def test_tells_the_agent_about_its_campaigns_hold_points(chat, qtbot, agent_webhook, monkeypatch):
     from app.agent_chat import UPDATE_PREFIX
 
-    url, received = crew_webhook
+    url, received = agent_webhook
     monkeypatch.setattr(settings_service, "load_agent_chat_url", lambda: url)
     panel = chat.panel
     panel.show_activity(
@@ -294,9 +289,9 @@ def test_tells_the_crew_about_its_campaigns_hold_points(chat, qtbot, crew_webhoo
     qtbot.waitUntil(lambda: len(received) == 1, timeout=5000)
     update = received[0]["chatInput"]
     assert update.startswith(UPDATE_PREFIX)
-    assert "Campaign 3 (CubeSat): hold point: The temperature left the band" in update
+    assert "Campaign 3 (CubeSat): decision point: The temperature left the band" in update
     assert "Extend the dwell [extend_dwell]" in update and "recommend one option" in update
     qtbot.waitUntil(lambda: panel._reply is None and not panel._wrap_up, timeout=5000)
     notices = [text for role, text in panel.messages() if role == "notice"]
-    assert notices[-1].startswith("Insight · Campaign 3 (CubeSat): hold point")
+    assert notices[-1].startswith("Insight · Campaign 3 (CubeSat): decision point")
     assert "recommend" not in notices[-1]
