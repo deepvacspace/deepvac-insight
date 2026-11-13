@@ -1,21 +1,17 @@
-"""Structural tests for GRUModel (app/model/simulation.py) -- shape,
-dtype, batching, and determinism, using a small instantiated-in-test model
-with seeded/fixed weights. Does NOT load the production model.pt checkpoint
--- that's a separate, explicitly `integration`-marked test, since it's the
-only one that needs the real ~170 KB file on disk."""
+"""Tests of LSTMModel."""
 
 import numpy as np
 import pytest
 import torch
 
-from app.model.simulation import DEFAULT_CHECKPOINT, GRUModel
+from app.model.simulation import DEFAULT_CHECKPOINT, LSTMModel
 
 pytestmark = pytest.mark.unit
 
 
 def _tiny_model(input_dim=5, hidden_dim=8, num_layers=1, dropout=0.0, seed=0):
     torch.manual_seed(seed)
-    model = GRUModel(
+    model = LSTMModel(
         input_dim=input_dim, hidden_dim=hidden_dim, num_layers=num_layers, dropout=dropout
     )
     model.eval()
@@ -24,7 +20,7 @@ def _tiny_model(input_dim=5, hidden_dim=8, num_layers=1, dropout=0.0, seed=0):
 
 def test_output_shape_single_batch():
     model = _tiny_model(input_dim=5, hidden_dim=8)
-    x = torch.zeros(1, 10, 5)  # (batch, seq_len, input_dim)
+    x = torch.zeros(1, 10, 5)
     with torch.no_grad():
         out = model(x)
     assert out.shape == (1, 1)
@@ -64,7 +60,7 @@ def test_output_is_finite_for_random_input():
 
 
 def test_deterministic_repeated_inference_in_eval_mode():
-    model = _tiny_model(dropout=0.5, seed=3)  # nonzero dropout to prove eval() disables it
+    model = _tiny_model(dropout=0.5, seed=3)
     x = torch.randn(2, 8, 5)
     with torch.no_grad():
         out1 = model(x)
@@ -96,7 +92,7 @@ def test_different_seeds_generally_disagree():
 
 def test_wrong_input_feature_dim_raises():
     model = _tiny_model(input_dim=5, hidden_dim=8)
-    x = torch.zeros(1, 10, 3)  # model expects 5 features, not 3
+    x = torch.zeros(1, 10, 3)
     with pytest.raises(RuntimeError), torch.no_grad():
         model(x)
 
@@ -127,12 +123,7 @@ def test_forward_return_type_is_tensor_not_numpy():
 
 @pytest.mark.integration
 def test_production_checkpoint_loads_and_infers():
-    """Loads the real app/model/model.pt once, runs one minimal forward
-    pass through the full load_model()/predict_delta_t1() path, and checks
-    only shape/finiteness -- not an exact learned value, since that would
-    also pin down the (separately maintained) feature preprocessing
-    contract. See tests/integration/test_simulation_golden.py for the
-    fixture that actually pins down real numerical behavior end to end."""
+    """Loads the production checkpoint and runs one prediction."""
     from app.model.simulation import DEFAULT_FEATURE_NAMES, load_model, predict_delta_t1
 
     assert DEFAULT_CHECKPOINT.exists(), f"production checkpoint missing: {DEFAULT_CHECKPOINT}"
