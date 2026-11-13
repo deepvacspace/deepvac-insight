@@ -1,5 +1,4 @@
-"""Analysis Live tab (app/live_tab.py) against the fake PLC (scripts/fake_plc.py):
-it follows the running job, analyses it, and saves it as a run when it ends."""
+"""Tests of the Analysis Live tab."""
 
 import importlib.util
 import socket
@@ -10,8 +9,9 @@ import pytest
 
 from app.api.chambers import ChamberLinks
 from app.live_tab import LiveTabPage
-from app.services import chambers_service, data_service
+from app.services import chambers_service, data_service, experiment_recorder
 from app.services import plc_gate as pg
+from app.services.day_recorder import DayRecorder, RecordingFeed
 
 pytestmark = pytest.mark.ui
 
@@ -65,10 +65,19 @@ def test_idle_without_a_chamber(deepvac_data_dir, qapp, qtbot, qsettings_isolate
     links.close()
 
 
-def test_follows_a_job_and_saves_it_when_it_ends(plc_chamber, qapp, qtbot, qsettings_isolated):
+def test_follows_a_job_and_saves_it_when_it_ends(
+    plc_chamber, qapp, qtbot, qsettings_isolated, monkeypatch
+):
     chamber, links = plc_chamber
+    monkeypatch.setattr(experiment_recorder, "MIN_RUN_DURATION_S", 0.5)
+    saved = []
+    experiments = experiment_recorder.ExperimentRecorder(
+        on_saved=lambda key, name: saved.append(key)
+    )
+    feed = RecordingFeed(links, DayRecorder(), experiments)
     page = LiveTabPage(links)
     qtbot.addWidget(page)
+    page.show()
     client = links.client(chamber_by_name("Fake PLC"))
     qtbot.waitUntil(lambda: "IDLE" in page.status_label.text(), timeout=8000)
 
@@ -79,6 +88,8 @@ def test_follows_a_job_and_saves_it_when_it_ends(plc_chamber, qapp, qtbot, qsett
     qtbot.waitUntil(
         lambda: len(client.history(since=client.snapshot().job_started_at)) > 20, timeout=8000
     )
+    feed.poll_once()
+    assert experiments.running("Fake PLC") is not None
     page._start_analysis()
     qtbot.waitUntil(lambda: page._analysis is not None, timeout=8000)
     assert page.kpi_values["stage"].text() != "—"
@@ -86,10 +97,12 @@ def test_follows_a_job_and_saves_it_when_it_ends(plc_chamber, qapp, qtbot, qsett
     assert page.save_btn.isEnabled()
 
     before = len(data_service.load_cached_runs())
-    saved = []
-    page.run_saved.connect(saved.append)
-    client.send_text_cmd("stop")  # the job ends: saved as a run by itself
-    qtbot.waitUntil(lambda: bool(saved), timeout=8000)
+    client.send_text_cmd("stop")
+    qtbot.waitUntil(lambda: client.snapshot().job_ended_at is not None, timeout=8000)
+    qtbot.waitUntil(lambda: client.snapshot().status != "work", timeout=8000)
+    feed.poll_once()
+    experiments.wait_saved()
+    assert saved
     runs = data_service.load_cached_runs()
     assert len(runs) == before + 1
     assert any(r["key"] == saved[0] and r["chamber"] == "Fake PLC" for r in runs)

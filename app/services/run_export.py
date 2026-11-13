@@ -1,19 +1,7 @@
-"""Exports of a recorded run, as DeepVac Control's analysis page offers them
-(its Export menu, control2-client analysisrunpage.cpp):
-
-    chart image        PNG, BMP or JPEG
-    data               CSV or TXT (tab separated), whole run or a time range
-    comparison CSV     one row per run: start, end, duration, samples, min / max / mean / final of a channel
-    experiment report  HTML (charts embedded) or PDF (A4 landscape), experimentreport.cpp
-    experiment bundle  JSON: manifest, analysis, samples, annotations and rules, RunStore::bundle
-
-Charts are drawn with QPainter on a QImage and the PDF is printed from a
-QTextDocument, so this works in the agent API's worker threads; it needs a
-QGuiApplication (the desktop app's, or the one `python -m app.api` makes).
-Qt painting is serialised here.
-"""
+"""Exports of a recorded run."""
 
 import base64
+import contextlib
 import csv
 import json
 import math
@@ -44,7 +32,7 @@ from app.core.analysis.comparison import compare_configs, compare_kpis, match_st
 IMAGE_FORMATS = {"png": "PNG", "bmp": "BMP", "jpg": "JPEG", "jpeg": "JPEG"}
 DATA_FORMATS = ("csv", "txt")
 REPORT_FORMATS = ("html", "pdf")
-CHART_WIDTH, CHART_HEIGHT = 1600, 700  # as the report's charts in DeepVac Control
+CHART_WIDTH, CHART_HEIGHT = 1600, 700
 MAX_EVENTS = 300
 
 STAGE_COLORS = {"ramp": "#d97706", "setpoint": "#2563eb", "hold": "#16a34a"}
@@ -127,26 +115,23 @@ class ExportError(ValueError):
     pass
 
 
-# ---------------------------------------------------------------- the run
-
-
 @dataclass
 class RunExport:
-    """What every export of one run needs (app.api.runs gives it: CatalogueEntry + load + manifest)."""
+    """Data needed to export a run."""
 
     title: str
-    start_epoch: float  # NaN when unknown
-    times: list[float]  # elapsed s from the first sample
+    start_epoch: float
+    times: list[float]
     channels: dict[str, list[float]]
-    analysis: object = None  # app.core.analysis ExperimentAnalysis
+    analysis: object = None
     manifest: dict | None = None
-    labels: dict[str, str] = field(default_factory=dict)  # channel -> description
+    labels: dict[str, str] = field(default_factory=dict)
     units: dict[str, str] = field(default_factory=dict)
     chamber: str = ""
-    annotations: list[dict] = field(default_factory=list)  # annotations_service rows
+    annotations: list[dict] = field(default_factory=list)
     rules: list[dict] = field(default_factory=list)
-    summary: dict | None = None  # the run's stored analysis summary (bundle)
-    samples: list | None = None  # the stored sample rows (bundle)
+    summary: dict | None = None
+    samples: list | None = None
 
     @property
     def duration_s(self) -> float:
@@ -167,9 +152,6 @@ def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_")[:60] or "run"
 
 
-# ---------------------------------------------------------------- formatting (experimentinput.cpp)
-
-
 def number(value, precision: int = 4) -> str:
     if value is None or not math.isfinite(value):
         return "—"
@@ -177,7 +159,7 @@ def number(value, precision: int = 4) -> str:
 
 
 def seconds(value) -> str:
-    """ExperimentLibrary::formatDuration: hh:mm:ss, with days in front."""
+    """Formats a duration as hh:mm:ss."""
     if value is None or not math.isfinite(value):
         return "—"
     total = int(round(max(0.0, value)))
@@ -216,9 +198,6 @@ def _csv_number(value) -> str:
     return "" if value is None or math.isnan(value) else f"{value:.10g}"
 
 
-# ---------------------------------------------------------------- charts
-
-
 @dataclass
 class Series:
     label: str
@@ -229,7 +208,7 @@ class Series:
 
 
 @dataclass
-class Region:  # a stage, shaded
+class Region:
     start: float
     end: float
     label: str
@@ -237,7 +216,7 @@ class Region:  # a stage, shaded
 
 
 @dataclass
-class Marker:  # an anomaly or event, a vertical line
+class Marker:
     at: float
     label: str
     color: str
@@ -272,7 +251,7 @@ def render_chart(
     x_from: float | None = None,
     x_to: float | None = None,
 ) -> QImage:
-    """A line chart over elapsed time: stages shaded behind, markers as vertical lines, a legend."""
+    """Renders a line chart over elapsed time."""
     if QGuiApplication.instance() is None:
         raise ExportError("Charts need a Qt GUI application (start the agent API through app.api).")
     xs = [x for s in series for x in s.x if math.isfinite(x)]
@@ -304,7 +283,6 @@ def render_chart(
         p.setFont(font)
         metrics = p.fontMetrics()
 
-        # legend entries (long run titles shortened), wrapped into rows
         legend, row, row_width = [[]], 0, 0.0
         for s in series:
             text = s.label if len(s.label) <= 48 else s.label[:47] + "…"
@@ -331,7 +309,6 @@ def render_chart(
             p.drawText(QPointF(plot.left(), 14 + metrics.ascent()), title)
             p.setFont(font)
 
-        # stages behind everything
         for r in regions:
             a, b = max(r.start, x0), min(r.end, x1)
             if b <= a:
@@ -344,7 +321,6 @@ def render_chart(
                 p.setPen(QColor(r.color))
                 p.drawText(QPointF(rect.left() + 4, plot.top() + metrics.ascent() + 3), r.label)
 
-        # grid and axes
         grid = QPen(QColor("#e2e8f0"))
         grid.setWidthF(1.0)
         p.setPen(grid)
@@ -387,7 +363,6 @@ def render_chart(
         p.setPen(QPen(QColor("#cbd5e1")))
         p.drawRect(plot)
 
-        # markers
         for m in markers:
             if not x0 <= m.at <= x1:
                 continue
@@ -397,7 +372,6 @@ def render_chart(
             p.setPen(pen)
             p.drawLine(QPointF(px(m.at), plot.top()), QPointF(px(m.at), plot.bottom()))
 
-        # series, at most two points (min / max) per pixel column
         p.setClipRect(plot)
         for s in series:
             pen = QPen(QColor(s.color))
@@ -416,7 +390,6 @@ def render_chart(
             p.drawPath(path)
         p.setClipping(False)
 
-        # legend
         ly = 14 + (metrics.height() + 8 if title else 0) + metrics.ascent()
         for entries in legend:
             lx = plot.left()
@@ -435,7 +408,7 @@ def render_chart(
 
 
 def _pixel_columns(s: Series, x0: float, x1: float, px) -> list[list[tuple[int, float, float]]]:
-    """The series as unbroken pieces of (pixel column, min, max): a gap (NaN) starts a new piece."""
+    """Reduces a series to per-pixel min and max segments."""
     pieces, piece = [], []
     for x, y in zip(s.x, s.y, strict=False):
         if not x0 <= x <= x1:
@@ -471,7 +444,6 @@ def save_image(image: QImage, path: Path, fmt: str) -> Path:
         raise ExportError(f"Image format must be one of {', '.join(sorted(IMAGE_FORMATS))}.")
     path.parent.mkdir(parents=True, exist_ok=True)
     with _paint_lock:
-        # quality: JPEG's; for PNG it would be the compression level, so the default there
         if not image.save(
             str(path), IMAGE_FORMATS[fmt], 92 if IMAGE_FORMATS[fmt] == "JPEG" else -1
         ):
@@ -523,7 +495,7 @@ def run_chart(
     width: int = CHART_WIDTH,
     height: int = CHART_HEIGHT,
 ) -> tuple[QImage, str, list[str]]:
-    """(image, caption, channels drawn) of one run: a report chart (temperature, control) or chosen channels."""
+    """Renders a chart of a run."""
     if channels:
         names, caption = list(channels), "Channels " + ", ".join(channels)
     elif kind in CHART_KINDS:
@@ -570,7 +542,48 @@ def comparison_chart(
     return render_chart(series, title=caption, width=width, height=height), caption
 
 
-# ---------------------------------------------------------------- data
+def recorded_export(
+    chamber: str,
+    start_epoch: float,
+    end_epoch: float,
+    title: str | None = None,
+    window=None,
+) -> RunExport:
+    """Builds an exportable run from a chamber's day recordings."""
+    from app.api import control_settings
+    from app.core.analysis import ExperimentInput, analyse_experiment
+    from app.services import day_recorder
+
+    if window is None:
+        window = day_recorder.read_range(chamber, start_epoch, end_epoch)
+    times, channels = window
+    if len(times) == 0:
+        raise ExportError(
+            f"Nothing was recorded from {chamber} between {date_time(start_epoch)} and "
+            f"{date_time(end_epoch)}."
+        )
+    first = float(times[0])
+    elapsed = [float(t) - first for t in times]
+    columns = {name: [float(v) for v in values] for name, values in channels.items()}
+    try:
+        analysis = analyse_experiment(ExperimentInput(elapsed, columns))
+    except Exception:
+        analysis = None
+    meta = {}
+    with contextlib.suppress(Exception):
+        meta = control_settings.state_meta(control_settings.load())
+    return RunExport(
+        title=title
+        or f"{chamber} {datetime.fromtimestamp(start_epoch):%Y-%m-%d %H:%M} – "
+        f"{datetime.fromtimestamp(end_epoch):%Y-%m-%d %H:%M}",
+        start_epoch=first,
+        times=elapsed,
+        channels=columns,
+        analysis=analysis,
+        labels={n: m.get("label", "") for n, m in meta.items() if n in columns},
+        units={n: m.get("unit", "") for n, m in meta.items() if n in columns},
+        chamber=chamber,
+    )
 
 
 def write_data(
@@ -581,7 +594,7 @@ def write_data(
     to_s: float | None = None,
     tab_separated: bool = False,
 ) -> int:
-    """AnalysisRunPage::exportRunData: Time, Elapsed s and every channel (by its description); rows written."""
+    """Writes a run's data file; returns the number of rows."""
     names = [c for c in (channels or list(run.channels)) if c in run.channels]
     lo = -math.inf if from_s is None else float(from_s)
     hi = math.inf if to_s is None else float(to_s)
@@ -610,7 +623,7 @@ def write_data(
 
 
 def write_comparison_csv(runs: list[RunExport], path: Path, channel: str = "temp") -> int:
-    """AnalysisRunPage::exportComparisonCsv: one row per run with a channel's min / max / mean / final."""
+    """Writes the run comparison CSV."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
@@ -650,16 +663,16 @@ def write_comparison_csv(runs: list[RunExport], path: Path, channel: str = "temp
 
 
 def write_bundle(run: RunExport, path: Path) -> Path:
-    """RunStore::bundle: the manifest with the analysis, the samples, annotations and variable rules."""
+    """Writes a run bundle."""
     bundle = dict(run.manifest or {"schema": "deepvac.run/1", "identity": {"name": run.title}})
     integrity = dict(bundle.get("integrity") or {})
-    integrity["status_when_exported"] = "unknown"  # Insight keeps no content hash check
+    integrity["status_when_exported"] = "unknown"
     bundle["integrity"] = integrity
     bundle["store"] = {
         "title": run.title,
         "chamber": run.chamber,
         "start": run.start_epoch,
-        "exported_by": "DeepVac Insight",
+        "exported_by": "Deepvac Insight",
     }
     bundle["analysis"] = run.summary or {}
     bundle["samples"] = run.samples if run.samples is not None else []
@@ -689,9 +702,6 @@ def write_bundle(run: RunExport, path: Path) -> Path:
         encoding="utf-8",
     )
     return path
-
-
-# ---------------------------------------------------------------- report (experimentreport.cpp)
 
 
 def _table(headers, rows) -> str:
@@ -788,7 +798,7 @@ def _calibration_summary(configuration: dict) -> str:
 
 
 def comparison_html(runs: list[RunExport]) -> str:
-    """The comparison section: KPIs against the first run, differing configuration, matched steps."""
+    """Builds the comparison section of a report."""
     analyses = [r.analysis for r in runs]
     names = [_esc(r.title) for r in runs]
     rows = []
@@ -847,7 +857,7 @@ def report_html(
     generated = (
         f"Generated {datetime.now():%Y-%m-%d %H:%M}"
         + (f" for {author}" if author else "")
-        + " by DeepVac Insight"
+        + " by Deepvac Insight"
     )
     body.append(f'<p><font color="#64748b">{_esc(generated)}</font></p>')
 
@@ -895,7 +905,7 @@ def report_html(
         ]
     else:
         detail_facts.append(
-            ("Record", "no manifest: recorded outside DeepVac Control or before manifests")
+            ("Record", "no manifest: recorded outside Deepvac Control or before manifests")
         )
     body.append(_facts(detail_facts))
 
@@ -1209,8 +1219,7 @@ def _event_color(etype: str) -> str:
 def report_charts(
     run: RunExport, compare: list[RunExport] = (), compare_channel: str = "temp"
 ) -> list[tuple[str, QImage]]:
-    """The report's charts, as DeepVac Control puts them in: the comparison (when there is one), then
-    temperature with stages and anomalies, then control output with its P / I / D terms."""
+    """Renders the charts of a run report."""
     charts = []
     if compare:
         image, caption = comparison_chart([run, *compare], compare_channel)
@@ -1219,7 +1228,7 @@ def report_charts(
         try:
             image, caption, _ = run_chart(run, kind)
         except ExportError:
-            continue  # the run doesn't have those channels
+            continue
         charts.append((caption, image))
     return charts
 
@@ -1233,7 +1242,7 @@ def write_report(
     first_charts: list[tuple[str, QImage]] = (),
     compare_channel: str = "temp",
 ) -> Path:
-    """first_charts: shown before the standard ones (the analysis page's "chart as shown")."""
+    """Writes a run report."""
     fmt = fmt.lower()
     if fmt not in REPORT_FORMATS:
         raise ExportError("Report format must be pdf or html.")
@@ -1258,9 +1267,9 @@ def write_report(
             )
         )
         writer.setTitle(run.title)
-        writer.setCreator("DeepVac Insight")
+        writer.setCreator("Deepvac Insight")
         document.print_(writer)
-        del writer  # finishes the file
+        del writer
     if not path.exists() or path.stat().st_size == 0:
         raise ExportError(f"Could not write {path}.")
     return path

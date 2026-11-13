@@ -1,4 +1,4 @@
-"""Descriptive statistics of one channel (port of core/analysis/seriesstats.cpp)."""
+"""Descriptive statistics of a channel."""
 
 import math
 from dataclasses import dataclass
@@ -8,19 +8,19 @@ from app.core.analysis.common import NaN, valid
 
 @dataclass
 class SeriesStats:
-    n: int = 0  # valid samples in the interval
-    missing: int = 0  # samples in the interval without a value
+    n: int = 0
+    missing: int = 0
     min: float = NaN
     max: float = NaN
     mean: float = NaN
-    std: float = NaN  # sample standard deviation (n - 1)
+    std: float = NaN
     rms: float = NaN
-    slope_per_s: float = NaN  # least-squares trend, value units per second
-    p95: float = NaN  # 95th percentile, linear interpolation
+    slope_per_s: float = NaN
+    p95: float = NaN
 
 
 def percentile(values, q: float) -> float:
-    """q in [0, 1], linear interpolation between order statistics (numpy's default)."""
+    """Returns a percentile by linear interpolation."""
     finite = sorted(v for v in values if valid(v))
     if not finite:
         return NaN
@@ -31,12 +31,12 @@ def percentile(values, q: float) -> float:
 
 
 def compute_stats(times, values, start: float = NaN, end: float = NaN) -> SeriesStats:
-    """times ascending (s); [start, end] inclusive, NaN bounds = unbounded."""
+    """Computes a channel's statistics over a range."""
     stats = SeriesStats()
     in_range: list[float] = []
     total = total_sq = sum_t = sum_tt = sum_ty = 0.0
-    t_ref = NaN  # centring the times keeps the slope numerically stable
-    for t, y in zip(times, values, strict=False):  # the shorter series, like the C++ min(size)
+    t_ref = NaN
+    for t, y in zip(times, values, strict=False):
         if (valid(start) and t < start) or (valid(end) and t > end):
             continue
         if not valid(y):

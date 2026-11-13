@@ -1,22 +1,4 @@
-"""How much disk a year of chamber recordings takes, by storage layout.
-
-Reads DeepVac Control's daily recordings (.dat: QDataStream, big endian: an
-empty QVariantMap header, QVector<double> times, QVector<QVector<double>>
-states) and stores every day in the layouts we could use, measuring bytes per
-sample:
-
-    dat        the .dat file itself (8-byte doubles, uncompressed)
-    json       Insight's runs.samples_json today: a JSON array of {channel: value} rows
-    wide       SQLite, one row per sample and one REAL column per channel
-    json_z     that JSON, zlib-compressed into a BLOB
-    blob64_z   per run, one zlib-compressed float64 BLOB per channel (and the times)
-    blob32_z   the same with float32 values (times stay float64)
-    parquet    the full-day recording both applications write now (app/services/day_recorder.py)
-
-then projects a year of continuous recording at the measured sample period.
-
-    uv run python scripts/estimate_storage.py <folder with .dat files> [--runs-db data\\deepvac_runs.sqlite3]
-"""
+"""How much disk a year of chamber recordings takes, by storage layout."""
 
 import argparse
 import json
@@ -45,7 +27,7 @@ def read_dat(path: Path):
     def doubles(count):
         nonlocal pos
         values = array("d", raw[pos : pos + 8 * count])
-        values.byteswap()  # QDataStream is big endian
+        values.byteswap()
         pos += 8 * count
         return values
 

@@ -1,4 +1,4 @@
-"""Steady-state detection (port of core/analysis/steadystate.cpp)."""
+"""Steady-state detection."""
 
 import math
 from dataclasses import dataclass
@@ -8,24 +8,24 @@ from app.core.analysis.common import NaN, valid
 
 @dataclass
 class SteadyStateOptions:
-    window_s: float = 120.0  # the criteria are evaluated on a trailing window this long
-    max_std: float = 0.1  # standard deviation of the value within the window
-    max_slope_per_min: float = 0.05  # |least-squares trend| within the window, units per minute
-    max_abs_error: float = 0.5  # |mean(reference - value)| within the window (with a reference)
-    min_duration_s: float = 60.0  # shorter steady stretches are dropped
+    window_s: float = 120.0
+    max_std: float = 0.1
+    max_slope_per_min: float = 0.05
+    max_abs_error: float = 0.5
+    min_duration_s: float = 60.0
 
 
 @dataclass
 class SteadyInterval:
-    """A stretch where the value is stable (and, with a reference, on target)."""
+    """An interval where the value is stable."""
 
-    first: int = 0  # sample indexes, inclusive
+    first: int = 0
     last: int = 0
     start: float = NaN
     end: float = NaN
     mean: float = NaN
     std: float = NaN
-    mean_error: float = NaN  # mean(reference - value), NaN without a reference
+    mean_error: float = NaN
 
     @property
     def duration(self) -> float:
@@ -35,7 +35,7 @@ class SteadyInterval:
 def detect_steady_states(
     times, value, reference=(), options: SteadyStateOptions | None = None
 ) -> list[SteadyInterval]:
-    """times ascending (s); reference may be empty."""
+    """Detects steady intervals."""
     options = options or SteadyStateOptions()
     n = min(len(times), len(value))
     if n < 3:
@@ -43,7 +43,6 @@ def detect_steady_states(
     with_reference = len(reference) >= n
     t0 = times[0]
 
-    # prefix sums over valid samples (time relative to the first sample for precision)
     count = [0.0] * (n + 1)
     st = [0.0] * (n + 1)
     sv = [0.0] * (n + 1)
@@ -66,14 +65,13 @@ def detect_steady_states(
         error_count[i + 1] = error_count[i] + (1.0 if error_ok else 0.0)
         error_sum[i + 1] = error_sum[i] + (reference[i] - v if error_ok else 0.0)
 
-    # every window that meets the criteria marks all of its samples steady
     cover = [0] * (n + 1)
     lo = 0
     for i in range(n):
         while times[lo] < times[i] - options.window_s:
             lo += 1
         if times[i] - times[lo] < 0.5 * options.window_s:
-            continue  # too short a window to judge
+            continue
         c = count[i + 1] - count[lo]
         if c < 5.0:
             continue
@@ -125,7 +123,7 @@ def detect_steady_states(
 
 
 def first_steady_time(steady: list[SteadyInterval], start: float, end: float) -> float:
-    """First time >= start at which a steady interval is in progress (NaN when none before end)."""
+    """Returns the first time a steady interval is in progress."""
     for interval in steady:
         if interval.end >= start and interval.start <= end:
             return max(interval.start, start)
@@ -133,7 +131,7 @@ def first_steady_time(steady: list[SteadyInterval], start: float, end: float) ->
 
 
 def steady_fraction(steady: list[SteadyInterval], start: float, end: float) -> float:
-    """Part of [start, end] covered by steady intervals, 0 ... 1 (NaN for an empty range)."""
+    """Part of [start, end] covered by steady intervals, 0 ..."""
     if not end > start:
         return NaN
     covered = sum(max(0.0, min(iv.end, end) - max(iv.start, start)) for iv in steady)

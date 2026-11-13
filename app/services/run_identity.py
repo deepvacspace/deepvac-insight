@@ -18,7 +18,7 @@ def file_fingerprint(path):
 
 
 def run_fingerprints():
-    """Returns {run_key: fingerprint} for every cached run whose samples file exists."""
+    """Returns the fingerprint of every cached run."""
     conn = data_service.connect_cache()
     try:
         rows = conn.execute("SELECT key, samples_path FROM runs").fetchall()

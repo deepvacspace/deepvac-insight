@@ -1,5 +1,4 @@
-"""Full-day recordings (app/services/day_recorder.py): the Parquet format shared with
-DeepVac Control, the recorder, the PLC feed and the analyst's recording tools."""
+"""Tests of the full-day recordings."""
 
 import importlib.util
 import math
@@ -47,7 +46,6 @@ def test_the_file_is_the_format_deepvac_control_reads(deepvac_data_dir):
     meta = {k.decode(): v.decode() for k, v in schema.metadata.items()}
     assert meta["deepvac.format"] == "deepvac.recording/1" and meta["deepvac.chamber"] == "PLC"
     assert '"unit": "°C"' in meta["deepvac.channels"]
-    # DeepVac Control's reader: GZIP, PLAIN, no dictionary, data pages v1
     column = pq.ParquetFile(path).metadata.row_group(0).column(1)
     assert column.compression == "GZIP" and not column.has_dictionary_page
     assert "PLAIN" in column.encodings and not any("DICT" in e for e in column.encodings)
@@ -60,18 +58,16 @@ def test_recorder_keeps_the_day_and_picks_it_up_again(deepvac_data_dir):
     t0 = _noon()
     recorder = day_recorder.DayRecorder()
     assert recorder.add("PLC", {"timestamp": t0, "temp": 20.0})
-    assert recorder.add(
-        "PLC", {"timestamp": t0 + 1, "temp": 21.0, "temp_ref": 30.0}
-    )  # a new channel
-    assert not recorder.add("PLC", {"timestamp": t0 + 1, "temp": 99.0})  # already have it
-    assert not recorder.add("PLC", {"temp": 1.0})  # no time
+    assert recorder.add("PLC", {"timestamp": t0 + 1, "temp": 21.0, "temp_ref": 30.0})
+    assert not recorder.add("PLC", {"timestamp": t0 + 1, "temp": 99.0})
+    assert not recorder.add("PLC", {"temp": 1.0})
     path = day_recorder.day_path("PLC", day_recorder.day_of(t0))
-    assert not path.exists()  # add() never writes
+    assert not path.exists()
     recorder.flush()
     times, values, _ = day_recorder.read_day(path)
     assert len(times) == 2 and math.isnan(values["temp_ref"][0]) and values["temp_ref"][1] == 30.0
 
-    again = day_recorder.DayRecorder()  # a restart: today goes on from the file
+    again = day_recorder.DayRecorder()
     again.add("PLC", {"timestamp": t0 + 2, "temp": 22.0, "temp_ref": 30.0})
     again.flush()
     times, values, _ = day_recorder.read_day(path)
@@ -138,14 +134,14 @@ def test_the_feed_records_the_plc(deepvac_data_dir):
     )
     feed = day_recorder.RecordingFeed(links, recorder)
     try:
-        feed.poll_once()  # connects
+        feed.poll_once()
         deadline = time.monotonic() + 8
         added = 0
         while added < 20 and time.monotonic() < deadline:
             time.sleep(0.2)
             added += feed.poll_once()
         assert added >= 20
-        assert feed.poll_once() < 10  # only what is new since the last poll
+        assert feed.poll_once() < 10
         feed.stop()
         days = day_recorder.list_days("Fake PLC")
         times, values, meta = day_recorder.read_day(days[-1]["path"])
@@ -161,7 +157,7 @@ def test_the_analyst_reads_a_day(deepvac_data_dir):
     recorder = day_recorder.DayRecorder()
     for i in range(600):
         if 200 <= i < 260:
-            continue  # the application was closed for a minute
+            continue
         status = 2.0 if 100 <= i < 400 else 1.0
         recorder.add(
             "PLC",

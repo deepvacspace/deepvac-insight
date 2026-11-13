@@ -1,34 +1,36 @@
-"""Analysis tab page (RunTabPage) shown for each opened run, plus SimWorker.
-
-Its Export menu has DeepVac Control's export options (app/services/run_export.py,
-shared with the analyst agent): chart image, data, comparison CSV, experiment
-report and experiment bundle.
-"""
+"""Analysis tab of an opened run."""
 
 import contextlib
+import math
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QThread, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
-    QColorDialog,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLayout,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
-    QScrollArea,
-    QSpinBox,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
-    QWidgetAction,
 )
 
 import app.services.annotations_service as annotations_service
@@ -37,23 +39,188 @@ import app.services.derived_variables_service as derived_variables_service
 import app.services.settings_service as settings_service
 from app import common
 from app.chart_widget import ChartWidget
-from app.common import COLORS, RULE_COLOR_OPTIONS, _svg_icon, fmt
+from app.common import COLORS, RULE_COLOR_OPTIONS
 from app.services import run_export
+from app.theme_colors import HMI
+
+MAX_COMPARE_MENU_RUNS = 40
+
+STAGE_COLORS = {"ramp": HMI["connecting"], "setpoint": HMI["cobalt"], "hold": HMI["live"]}
+SEVERITY_COLORS = {"critical": HMI["alarm"], "warning": HMI["connecting"], "info": HMI["steel"]}
 
 
-class SimWorker(QThread):
-    finished_ok = Signal(dict)
-    failed = Signal(str)
+def _finite(value):
+    return isinstance(value, (int, float)) and math.isfinite(value)
 
-    def __init__(self, payload):
-        super().__init__()
-        self.payload = payload
 
-    def run(self):
-        try:
-            self.finished_ok.emit(data.simulate_gru_run(self.payload))
-        except Exception as exc:
-            self.failed.emit(str(exc))
+def _stat(value, precision=4):
+    """Formats a statistic."""
+    if not _finite(value):
+        return "—"
+    magnitude = abs(value)
+    if magnitude != 0 and (magnitude < 1e-3 or magnitude >= 1e6):
+        return f"{value:.2e}"
+    digits = 1 if magnitude >= 100 else (3 if precision > 2 else precision)
+    return f"{value:.{digits}f}"
+
+
+def _duration(seconds):
+    if not _finite(seconds):
+        return "—"
+    total = int(round(seconds))
+    sign = "-" if total < 0 else ""
+    hours, rest = divmod(abs(total), 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{sign}{hours} h {minutes:02d} min"
+    if minutes:
+        return f"{sign}{minutes} min {secs:02d} s"
+    return f"{sign}{secs} s"
+
+
+def _percent(fraction):
+    return f"{fraction * 100:.0f} %" if _finite(fraction) else "—"
+
+
+def _pid_shares(pid):
+    if not _finite(pid.share_p):
+        return "—"
+    return f"P {_percent(pid.share_p)} · I {_percent(pid.share_i)} · D {_percent(pid.share_d)}"
+
+
+def _swatch_icon(color):
+    pix = QPixmap(14, 14)
+    pix.fill(QColor(color))
+    return QIcon(pix)
+
+
+def _make_table(headers, stretch_column):
+    table = QTableWidget(0, len(headers))
+    table.setHorizontalHeaderLabels(headers)
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeToContents)
+    header.setSectionResizeMode(stretch_column, QHeaderView.Stretch)
+    header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    header.setHighlightSections(False)
+    table.verticalHeader().setVisible(False)
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SingleSelection)
+    table.setAlternatingRowColors(True)
+    table.setShowGrid(False)
+    table.setWordWrap(False)
+    table.setMinimumHeight(90)
+    return table
+
+
+def _fill_table(table, rows, right_from=1, colors=None):
+    """Fills a table with rows and text colours."""
+    table.setRowCount(len(rows))
+    for r, cells in enumerate(rows):
+        for c, text in enumerate(cells):
+            item = QTableWidgetItem(str(text))
+            item.setTextAlignment(
+                (Qt.AlignRight if c >= right_from else Qt.AlignLeft) | Qt.AlignVCenter
+            )
+            if colors and (r, c) in colors:
+                item.setForeground(QColor(colors[(r, c)]))
+            table.setItem(r, c, item)
+
+
+class FlowLayout(QLayout):
+    """Lays its items out left to right, wrapping onto new rows like text."""
+
+    def __init__(self, parent=None, spacing=4):
+        super().__init__(parent)
+        self._items = []
+        self._gap = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):  # noqa: N802
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):  # noqa: N802
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):  # noqa: N802
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self):  # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):  # noqa: N802
+        return True
+
+    def heightForWidth(self, width):  # noqa: N802
+        return self._arrange(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):  # noqa: N802
+        super().setGeometry(rect)
+        self._arrange(rect, False)
+
+    def sizeHint(self):  # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self):  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
+
+    def _arrange(self, rect, test_only):
+        m = self.contentsMargins()
+        area = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
+        x, y, row_height = area.x(), area.y(), 0
+        for item in self._items:
+            if item.isEmpty():
+                continue
+            hint = item.sizeHint()
+            next_x = x + hint.width() + self._gap
+            if next_x - self._gap > area.right() and row_height > 0:
+                x = area.x()
+                y += row_height + self._gap
+                next_x = x + hint.width() + self._gap
+                row_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            row_height = max(row_height, hint.height())
+        return y + row_height - rect.y() + m.bottom()
+
+
+class _FlowBox(QWidget):
+    """Holds a FlowLayout and keeps its minimum height equal to the wrapped rows."""
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._update_minimum()
+
+    def event(self, event):
+        handled = super().event(event)
+        if event.type() == QEvent.LayoutRequest:
+            self._update_minimum()
+        return handled
+
+    def _update_minimum(self):
+        lay = self.layout()
+        if lay is not None and lay.hasHeightForWidth():
+            needed = lay.heightForWidth(self.width())
+            if needed != self.minimumHeight():
+                self.setMinimumHeight(needed)
+
+
+def _state_meta():
+    """Returns the PLC states' labels and units."""
+    try:
+        from app.api import control_settings
+
+        return control_settings.state_meta(control_settings.load()) or {}
+    except Exception:
+        return {}
 
 
 class RunTabPage(QWidget):
@@ -66,203 +233,337 @@ class RunTabPage(QWidget):
         self.active_run = run_key
         self.detail = None
         self.series = None
-        self.selected_columns = set()  # populated in load() from saved settings or defaults
+        self.selected_columns = set()
         self._channel_colors = {}
         self.compare_runs = {run_key}
         self.dark = dark
         self.current_user = current_user or {"id": None, "name": "Unknown", "email": ""}
-        self._user_annotations = []  # [{id, x0, x1, label, color, user_name, ...}] — persisted
-        self._ann_list_layout = None
-        self._var_rules = []  # [{id, name, channel, lo, hi, color, user_name, ...}] — persisted
+        self._user_annotations = []
+        self._var_rules = []
         self._rule_ch_combo = None
-        self._rules_list_layout = None
-        self._derived_variables = []  # every definition, regardless of availability for this run
-        self._available_derived = []  # subset computable from this run's numeric_columns
-        self._catalogue = None  # app.api.runs.RunCatalogue, for the exports
+        self._derived_variables = []
+        self._available_derived = []
+        self._catalogue = None
+        self._analysis = None
         self._build_ui()
 
-    # ── UI construction ───────────────────────────────────────────────────────
-
     def _build_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        """Builds the run's chart, rail and panels."""
+        from app.analysis_panels import ChannelList, ChartTools
+        from app.chart_side_bar import GAP, ChartSideBar
 
-        scroll = QScrollArea()
-        scroll.setObjectName("workspaceScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        body = QWidget()
-        body.setObjectName("workspaceBody")
-        self._body_layout = QVBoxLayout(body)
-        self._body_layout.setContentsMargins(14, 14, 14, 14)
-        self._body_layout.setSpacing(10)
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
-
-        # Chart card
-        chart_card = QFrame()
-        chart_card.setObjectName("card")
-        chart_card_lay = QVBoxLayout(chart_card)
-        chart_card_lay.setContentsMargins(10, 10, 10, 10)
-        chart_card_lay.setSpacing(8)
-
-        toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(8)
+        self.setObjectName("analysisPage")
+        self.setAttribute(Qt.WA_StyledBackground)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(GAP)
 
         self.title_label = QLabel(self.tr("Loading…"))
-        self.title_label.setObjectName("title")
-        toolbar.addWidget(self.title_label)
+        self.title_label.setObjectName("analysisTitle")
+        self.title_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.meta_label = QLabel()
+        self.meta_label.setObjectName("analysisMeta")
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        header.addWidget(self.title_label, 1)
+        header.addWidget(self.meta_label)
 
-        self.run_metric_labels = {}
-        for lbl, key in [(self.tr("Samples"), "samples"), (self.tr("Duration"), "duration")]:
-            toolbar.addWidget(self._inline_stat(lbl, key))
-        toolbar.addStretch(1)
-
-        self._ch_btn = QPushButton(self.tr("Channels ▾"))
-        self._ch_btn.setObjectName("secondaryButton")
-        self._ch_btn.clicked.connect(self._open_channels_menu)
-
-        self.chart_mode = QComboBox()
+        self.chart_mode = QComboBox(self)
         self.chart_mode.addItems(["line", "scatter"])
+        self.chart_mode.setVisible(False)
         self.chart_mode.currentTextChanged.connect(self.refresh_chart)
 
-        self.show_setpoint = QCheckBox(self.tr("Setpoint"))
-        self.show_setpoint.setChecked(True)
-        self.show_setpoint.stateChanged.connect(self.refresh_chart)
-
-        self.setpoint_value = QLineEdit("0")
-        self.setpoint_value.setFixedWidth(64)
-        self.setpoint_value.textChanged.connect(self.refresh_chart)
-
-        reset_btn = QPushButton(self.tr("Reset View"))
-        reset_btn.setIcon(_svg_icon("arrow-counterclockwise", "#94a3b8", 14))
-        reset_btn.setIconSize(QSize(14, 14))
-        reset_btn.clicked.connect(self._reset_views)
-
-        self._ann_btn = QPushButton(self.tr("Annotate"))
-        self._ann_btn.setCheckable(True)
-        self._ann_btn.setToolTip(self.tr("Drag on the chart to mark a time range"))
-        self._ann_btn.toggled.connect(self._toggle_annotate_mode)
-
-        download = QPushButton(self.tr("Export"))
-        download.setIcon(_svg_icon("download", "#ffffff", 14))
-        download.setIconSize(QSize(14, 14))
-        download.setObjectName("primaryButton")
-        download.setMenu(self._build_export_menu(download))
-
-        for w in [
-            self._ch_btn,
-            self.show_setpoint,
-            self.setpoint_value,
-            reset_btn,
-            self._ann_btn,
-            self.chart_mode,
-            download,
-        ]:
-            toolbar.addWidget(w)
-
-        chart_card_lay.addLayout(toolbar)
         self.chart = ChartWidget()
+        self.chart.plot.setMinimumHeight(160)
         self.chart.annotation_committed.connect(self._on_annotation_committed)
-        chart_card_lay.addWidget(self.chart)
-        self._body_layout.addWidget(chart_card)
+        chart_card = QFrame()
+        chart_card.setObjectName("analysisChartCard")
+        chart_lay = QVBoxLayout(chart_card)
+        chart_lay.setContentsMargins(10, 8, 10, 8)
+        chart_lay.setSpacing(6)
+        chart_lay.addLayout(header)
+        chart_lay.addWidget(self.chart, 1)
 
-        # Controls card
-        ctrl_card = QFrame()
-        ctrl_card.setObjectName("card")
-        ctrl_lay = QVBoxLayout(ctrl_card)
-        ctrl_lay.setContentsMargins(10, 10, 10, 10)
-        ctrl_lay.setSpacing(8)
-        ctrl_lay.addWidget(self._sec_lbl(self.tr("PLOT CONTROLS")))
+        self._annotations_dialog = self._make_dialog(
+            self._build_annotations_panel(), self.tr("Annotations")
+        )
+        self._rules_dialog = self._make_dialog(self._build_rules_panel(), self.tr("Variable rules"))
+        self._statistics_dialog = self._make_dialog(
+            self._build_statistics_panel(), self.tr("Statistics")
+        )
 
-        time_row = QHBoxLayout()
-        time_row.setSpacing(6)
-        self.time_start = QDoubleSpinBox()
-        self.time_start.setRange(0, 1_000_000)
-        self.time_start.setDecimals(1)
-        self.time_start.setSuffix(" s")
-        self.time_end = QDoubleSpinBox()
-        self.time_end.setRange(0, 1_000_000)
-        self.time_end.setDecimals(1)
-        self.time_end.setSuffix(" s")
-        apply_time = QPushButton(self.tr("Apply Range"))
-        apply_time.clicked.connect(self._apply_time_range)
-        reset_time = QPushButton(self.tr("Full Range"))
-        reset_time.clicked.connect(self._reset_time_range)
-        self.smoothing = QSpinBox()
-        self.smoothing.setRange(1, 501)
-        self.smoothing.setSingleStep(2)
-        self.smoothing.setValue(1)
-        self.smoothing.setSuffix(" pt")
-        self.smoothing.valueChanged.connect(self._set_smoothing)
-        for w in [
-            QLabel(self.tr("Start")),
-            self.time_start,
-            QLabel(self.tr("End")),
-            self.time_end,
-            apply_time,
-            reset_time,
-            QLabel(self.tr("Smooth")),
-            self.smoothing,
-        ]:
-            time_row.addWidget(w)
-        time_row.addStretch(1)
-        ctrl_lay.addLayout(time_row)
+        self.side_bar = ChartSideBar(self)
+        self.channel_list = ChannelList(manage=True)
+        self.channel_list.toggled.connect(self._set_channel_active)
+        self.channel_list.color_changed.connect(self._set_channel_color)
+        self.channel_list.manage_requested.connect(self._open_derived_variables_dialog)
+        self.side_bar.add_page("channels", self.tr("Channels"), "rail-channels", self.channel_list)
+        self.side_bar.add_page("options", self.tr("Options"), "rail-options", self._options_page())
+        stats = self.side_bar.add_action(self.tr("Statistics"), "rail-stats")
+        stats.setToolTip(
+            self.tr("Statistics of the visible range, run KPIs, stages, anomalies and comparison")
+        )
+        stats.clicked.connect(self._open_statistics)
+        self.side_bar.add_page("info", self.tr("Info"), "rail-info", self._info_page())
+        assistant = self.side_bar.add_action(self.tr("Assistant"), "rail-ai")
+        assistant.setToolTip(self.tr("Chat with the Deepvac Agents"))
+        assistant.clicked.connect(self._toggle_assistant)
+        self.side_bar.add_page(
+            "export", self.tr("Export"), "rail-export", self._export_page(), bottom=True
+        )
+        self.tools = ChartTools(self.side_bar, self.chart, annotate=True)
+        self.side_bar.set_tools(
+            self.tr("Chart tools"), self.tr("Tools"), "rail-pointer", self.tools
+        )
+        self.side_bar.opened.connect(self._on_panel_opened)
 
-        ov_row = QHBoxLayout()
-        ov_row.setSpacing(12)
-        ov_row.addWidget(QLabel(self.tr("Overlays")))
-        self.overlay_min = QCheckBox(self.tr("Min"))
-        self.overlay_max = QCheckBox(self.tr("Max"))
-        self.overlay_avg = QCheckBox(self.tr("Average"))
-        for cb in [self.overlay_min, self.overlay_max, self.overlay_avg]:
-            cb.stateChanged.connect(self._update_overlays)
-            ov_row.addWidget(cb)
-        ov_row.addSpacing(20)
-        ov_row.addWidget(QLabel(self.tr("Markers")))
-        self.mk_events = QCheckBox(self.tr("Events"))
-        self.mk_alarms = QCheckBox(self.tr("Alarms"))
-        self.mk_ctrl = QCheckBox(self.tr("Controller"))
-        self.mk_state = QCheckBox(self.tr("State"))
-        for cb in [self.mk_events, self.mk_alarms, self.mk_ctrl, self.mk_state]:
-            cb.setChecked(True)
-            cb.stateChanged.connect(self._update_markers)
-            ov_row.addWidget(cb)
-        ov_row.addStretch(1)
-        ctrl_lay.addLayout(ov_row)
-        self._body_layout.addWidget(ctrl_card)
+        root.addWidget(self.side_bar)
+        root.addWidget(chart_card, 1)
 
-        self._rules_card_widget = self._build_rules_card()
-        self._body_layout.addWidget(self._rules_card_widget)
-
-        self._ann_card_widget = self._build_annotations_card()
-        self._body_layout.addWidget(self._ann_card_widget)
+        self._statistics_timer = QTimer(self)
+        self._statistics_timer.setSingleShot(True)
+        self._statistics_timer.setInterval(250)
+        self._statistics_timer.timeout.connect(self._refresh_range_statistics)
+        self.chart.plot.getViewBox().sigXRangeChanged.connect(
+            lambda *_: self._statistics_timer.start()
+        )
 
         self.chart.set_dark(self.dark)
+        self._update_tool_icons()
 
-    def _inline_stat(self, label, key):
-        box = QFrame()
-        box.setObjectName("inlineStat")
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(10, 4, 10, 4)
-        lay.setSpacing(0)
-        cap = QLabel(label)
-        cap.setObjectName("inlineStatLabel")
-        val = QLabel("-")
-        val.setObjectName("inlineStatValue")
-        lay.addWidget(cap)
-        lay.addWidget(val)
-        self.run_metric_labels[key] = val
-        return box
+    def _update_tool_icons(self):
+        self.side_bar.set_icon_color(HMI["sky"] if self.dark else HMI["cobalt"])
 
-    def _sec_lbl(self, text):
-        lbl = QLabel(text)
-        lbl.setObjectName("sectionLabel")
-        return lbl
+    def _toggle_assistant(self):
+        chat = getattr(self.window(), "agent_chat", None)
+        if chat is not None:
+            chat.toggle()
 
-    # ── Data loading ─────────────────────────────────────────────────────────
+    def _on_panel_opened(self, key):
+        if key == "export":
+            self._prepare_export()
+        elif key == "info":
+            self._refresh_info()
+
+    def _options_page(self):
+        from app.analysis_panels import add_section, caption, link_button, panel_page, segments
+
+        page, lay = panel_page()
+
+        def time_spin():
+            spin = QDoubleSpinBox()
+            spin.setRange(0, 1_000_000)
+            spin.setDecimals(1)
+            spin.setSuffix(" s")
+            return spin
+
+        rng = add_section(lay, self.tr("Time range"))
+        self.time_start = time_spin()
+        self.time_end = time_spin()
+        rng.addWidget(caption(self.tr("From")))
+        rng.addWidget(self.time_start)
+        rng.addWidget(caption(self.tr("To")))
+        rng.addWidget(self.time_end)
+        row = QHBoxLayout()
+        apply_time = QPushButton(self.tr("Apply"))
+        apply_time.setObjectName("primaryButton")
+        apply_time.setToolTip(self.tr("Show only the selected time range"))
+        apply_time.clicked.connect(self._apply_time_range)
+        whole = link_button(self.tr("Reset to whole range"))
+        whole.clicked.connect(self._reset_time_range)
+        row.addWidget(apply_time)
+        row.addWidget(whole)
+        row.addStretch(1)
+        rng.addLayout(row)
+
+        display = add_section(lay, self.tr("Display"))
+        display.addWidget(caption(self.tr("Smoothing")))
+        self.smoothing = QComboBox()
+        self.smoothing.addItem(self.tr("Off"), 1)
+        for samples in (3, 5, 11, 21, 51, 101, 201):
+            self.smoothing.addItem(self.tr("{0} samples").format(samples), samples)
+        self.smoothing.setToolTip(self.tr("Moving average window"))
+        self.smoothing.currentIndexChanged.connect(
+            lambda *_: self._set_smoothing(self.smoothing.currentData())
+        )
+        display.addWidget(self.smoothing)
+        display.addWidget(caption(self.tr("Draw as")))
+        draw_row, (lines_btn, points_btn) = segments([self.tr("Lines"), self.tr("Points")])
+        lines_btn.setChecked(True)
+        lines_btn.clicked.connect(lambda: self.chart_mode.setCurrentText("line"))
+        points_btn.clicked.connect(lambda: self.chart_mode.setCurrentText("scatter"))
+        display.addLayout(draw_row)
+
+        markers = add_section(lay, self.tr("Markers"))
+        row1, (self.mk_events, self.mk_alarms, self.mk_ctrl) = segments(
+            [self.tr("Events"), self.tr("Alarms"), self.tr("Controller")], exclusive=False
+        )
+        row2, (self.mk_state, self.mk_stages, self.mk_anomalies) = segments(
+            [self.tr("State"), self.tr("Stages"), self.tr("Anomalies")], exclusive=False
+        )
+        for button in (self.mk_events, self.mk_alarms, self.mk_ctrl, self.mk_state):
+            button.setChecked(True)
+            button.toggled.connect(self._update_markers)
+        self.mk_stages.setToolTip(self.tr("Show the automatic ramp / setpoint / hold stages"))
+        self.mk_anomalies.setToolTip(self.tr("Mark the detected anomalies on the chart"))
+        for button in (self.mk_stages, self.mk_anomalies):
+            button.toggled.connect(self.refresh_chart)
+        markers.addLayout(row1)
+        markers.addLayout(row2)
+
+        overlays = add_section(lay, self.tr("Reference lines"))
+        self.overlay_combo = QComboBox()
+        self.overlay_combo.addItem(self.tr("Every channel shown"), None)
+        self.overlay_combo.currentIndexChanged.connect(
+            lambda *_: self.chart.set_overlay_channel(self.overlay_combo.currentData())
+        )
+        overlays.addWidget(self.overlay_combo)
+        overlays.addWidget(caption(self.tr("Lines at")))
+        ref_row, (self.overlay_min, self.overlay_max, self.overlay_avg) = segments(
+            [self.tr("Min"), self.tr("Max"), self.tr("Average")], exclusive=False
+        )
+        for button in (self.overlay_min, self.overlay_max, self.overlay_avg):
+            button.toggled.connect(self._update_overlays)
+        overlays.addLayout(ref_row)
+
+        compare = add_section(lay, self.tr("Comparison"))
+        self._compare_btn = QPushButton(self.tr("Compare"))
+        self._compare_btn.setToolTip(self.tr("Overlay the first selected channel of other runs"))
+        self._compare_btn.clicked.connect(self._open_compare_menu)
+        compare.addWidget(self._compare_btn)
+        self.show_setpoint = QCheckBox(self.tr("Setpoint line at"))
+        self.show_setpoint.setChecked(True)
+        self.show_setpoint.toggled.connect(self.refresh_chart)
+        self.setpoint_value = QLineEdit("0")
+        self.setpoint_value.textChanged.connect(self.refresh_chart)
+        self._setpoint_group = QWidget()
+        self._setpoint_group.setObjectName("sidePage")
+        sp = QHBoxLayout(self._setpoint_group)
+        sp.setContentsMargins(0, 0, 0, 0)
+        sp.addWidget(self.show_setpoint)
+        sp.addWidget(self.setpoint_value, 1)
+        self._setpoint_group.setVisible(False)
+        compare.addWidget(self._setpoint_group)
+
+        notes = add_section(lay, self.tr("Annotations and rules"))
+        ann = link_button(self.tr("Annotations…"))
+        ann.clicked.connect(lambda: self._show_dialog(self._annotations_dialog))
+        rules = link_button(self.tr("Variable rules…"))
+        rules.clicked.connect(lambda: self._show_dialog(self._rules_dialog))
+        notes.addWidget(ann, 0, Qt.AlignLeft)
+        notes.addWidget(rules, 0, Qt.AlignLeft)
+        lay.addStretch(1)
+        return page
+
+    def _info_page(self):
+        from app.analysis_panels import RunDetailsForm, panel_page
+
+        page, lay = panel_page()
+        self._info_title = QLabel()
+        self._info_title.setObjectName("infoTitle")
+        self._info_title.setWordWrap(True)
+        lay.addWidget(self._info_title)
+        self.details_form = RunDetailsForm()
+        self.details_form.edited.connect(lambda: self._details_note.clear())
+        lay.addWidget(self.details_form)
+        row = QHBoxLayout()
+        self._details_update = QPushButton(self.tr("Update"))
+        self._details_update.setObjectName("primaryButton")
+        self._details_update.clicked.connect(self._save_details)
+        self._details_note = QLabel()
+        self._details_note.setProperty("muted", True)
+        self._details_note.setWordWrap(True)
+        row.addWidget(self._details_update)
+        row.addWidget(self._details_note, 1)
+        lay.addLayout(row)
+        line = QFrame()
+        line.setObjectName("cardDivider")
+        line.setFixedHeight(1)
+        lay.addWidget(line)
+        self._info_rows = QLabel()
+        self._info_rows.setWordWrap(True)
+        self._info_rows.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self._info_rows)
+        lay.addStretch(1)
+        return page
+
+    def _refresh_info(self):
+        from app.analysis_panels import info_rows
+
+        run = (self.detail or {}).get("run", {})
+        self._info_title.setText(run.get("id", self.run_key))
+        try:
+            self.details_form.set_metadata(data.run_metadata(self.run_key))
+            self._details_update.setEnabled(True)
+        except Exception:
+            self.details_form.set_metadata({})
+            self._details_update.setEnabled(False)
+        self._details_note.clear()
+        start, end = self._run_span()
+
+        def clock(epoch):
+            from datetime import datetime
+
+            return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S") if epoch else None
+
+        self._info_rows.setText(
+            info_rows(
+                [
+                    (self.tr("Run"), self.run_key),
+                    (self.tr("Chamber"), run.get("chamber")),
+                    (self.tr("Test profile"), run.get("test_profile")),
+                    (self.tr("Start"), clock(start) or run.get("start_time")),
+                    (self.tr("End"), clock(end) or run.get("end_time")),
+                    (
+                        self.tr("Duration"),
+                        _duration(run["duration_s"]) if run.get("duration_s") else None,
+                    ),
+                    (self.tr("Samples"), run.get("samples")),
+                    (self.tr("Channels"), len((self.detail or {}).get("numeric_columns", []))),
+                ]
+            )
+        )
+
+    def _save_details(self):
+        try:
+            data.update_run_metadata(self.run_key, self.details_form.metadata())
+        except Exception as exc:
+            QMessageBox.warning(self, self.tr("Experiment details"), str(exc))
+            return
+        self._details_note.setText(self.tr("Saved. The report and the agents use these details."))
+
+    def _export_page(self):
+        from app.analysis_panels import panel_page
+        from app.export_panel import ExportPanel
+
+        page, lay = panel_page()
+        self.export_panel = ExportPanel(can_report=True, can_bundle=True)
+        self.export_panel.export_requested.connect(self._on_export_requested)
+        self.export_panel.preview_requested.connect(self._on_export_preview)
+        lay.addWidget(self.export_panel)
+        lay.addStretch(1)
+        return page
+
+    def _make_dialog(self, panel, title):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setProperty("baseTitle", title)
+        lay = QVBoxLayout(dialog)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.addWidget(panel)
+        return dialog
+
+    def _show_dialog(self, dialog):
+        """Opens over the main window, most of its size."""
+        if not dialog.isVisible():
+            area = self.window().geometry()
+            dialog.resize(int(area.width() * 0.85), int(area.height() * 0.8))
+            dialog.move(area.center() - QPoint(dialog.width() // 2, dialog.height() // 2))
+        run_id = (self.detail or {}).get("run", {}).get("id", self.run_key)
+        dialog.setWindowTitle(f"{dialog.property('baseTitle')} · {run_id}")
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def load(self):
         try:
@@ -280,8 +581,10 @@ class RunTabPage(QWidget):
                 self.selected_columns = set(preferred or numeric_cols[:3])
         run = self.detail.get("run", {})
         self.title_label.setText(run.get("id", self.run_key))
+        self.title_label.setToolTip(run.get("id", self.run_key))
         self._user_annotations = annotations_service.list_annotations(self.run_key)
         self._var_rules = annotations_service.list_rules(self.run_key)
+        self._analysis = None
         self._load_derived_variables()
         self._render_summary()
         self._render_channels()
@@ -300,9 +603,6 @@ class RunTabPage(QWidget):
             for d in self._derived_variables
             if not derived_variables_service.missing_channels(d, numeric_cols)
         ]
-        # A derived variable selected in a previous run may not be
-        # computable here -- drop it from the active selection rather than
-        # letting _load_series() fail on a channel that quietly isn't real.
         available_names = {d["name"] for d in self._available_derived}
         real_and_available = set(self.detail.get("numeric_columns", [])) | available_names
         self.selected_columns = {c for c in self.selected_columns if c in real_and_available}
@@ -314,12 +614,16 @@ class RunTabPage(QWidget):
             self.compare_runs.discard(key)
         if not self.compare_runs:
             self.compare_runs.add(self.run_key)
+        self._update_compare_ui()
         self._load_series()
         self.compare_changed.emit(self.compare_runs)
+        if self._statistics_dialog.isVisible():
+            self._refresh_statistics()
 
     def update_theme(self, dark):
         self.dark = dark
         self.chart.set_dark(dark)
+        self._update_tool_icons()
 
     def primary_chart(self):
         return self.chart
@@ -335,24 +639,22 @@ class RunTabPage(QWidget):
 
     def _render_summary(self):
         run = (self.detail or {}).get("run", {})
-        summary = (self.detail or {}).get("summary", {})
-        values = {
-            "samples": run.get("samples"),
-            "duration": f"{fmt(run.get('duration_s'), 1)} s"
-            if run.get("duration_s") is not None
-            else None,
-            "tail_mae": summary.get("tail_mae"),
-        }
-        for key, lbl in self.run_metric_labels.items():
-            lbl.setText(fmt(values.get(key)))
+        parts = []
+        if run.get("samples") is not None:
+            parts.append(self.tr("{0} samples").format(run["samples"]))
+        if run.get("duration_s") is not None:
+            parts.append(_duration(run["duration_s"]))
+        self.meta_label.setText("  ·  ".join(parts))
 
     def _render_channels(self):
         if not self.detail:
             return
         cols = self.detail.get("numeric_columns", [])
+        from app.live_tab import DEFAULT_COLORS
+
         for i, col in enumerate(cols):
             if col not in self._channel_colors:
-                self._channel_colors[col] = COLORS[i % len(COLORS)]
+                self._channel_colors[col] = DEFAULT_COLORS.get(col) or COLORS[i % len(COLORS)]
         for i, d in enumerate(self._available_derived):
             if d["name"] not in self._channel_colors:
                 self._channel_colors[d["name"]] = d.get("color") or COLORS[i % len(COLORS)]
@@ -365,32 +667,75 @@ class RunTabPage(QWidget):
         self._update_rule_channel_combo()
 
     def _update_ch_btn_label(self):
+        """Updates the Channels panel."""
         cols = (self.detail or {}).get("numeric_columns", [])
-        total = len(cols) + len(self._available_derived)
-        n = len(self.selected_columns)
-        self._ch_btn.setText(
-            self.tr("Channels ({0}/{1}) ▾").format(n, total) if total else self.tr("Channels ▾")
+        meta = _state_meta()
+        self.channel_list.set_channels(
+            [
+                {
+                    "key": col,
+                    "label": (meta.get(col) or {}).get("label") or col,
+                    "unit": (meta.get(col) or {}).get("unit") or "",
+                    "color": self._channel_colors.get(col, COLORS[0]),
+                    "checked": col in self.selected_columns,
+                    "tooltip": col,
+                }
+                for col in cols
+            ],
+            [
+                {
+                    "key": d["name"],
+                    "label": d["name"],
+                    "color": self._channel_colors.get(d["name"], COLORS[0]),
+                    "checked": d["name"] in self.selected_columns,
+                    "tooltip": self._derived_tooltip(d),
+                }
+                for d in self._available_derived
+            ],
         )
+        self.side_bar.set_subtitle("channels", self.channel_list.shown_text())
+        current = self.overlay_combo.currentData()
+        self.overlay_combo.blockSignals(True)
+        while self.overlay_combo.count() > 1:
+            self.overlay_combo.removeItem(1)
+        for col in cols:
+            self.overlay_combo.addItem((meta.get(col) or {}).get("label") or col, col)
+        self.overlay_combo.setCurrentIndex(max(0, self.overlay_combo.findData(current)))
+        self.overlay_combo.blockSignals(False)
 
-    def _open_channels_menu(self):
-        if not self.detail:
-            return
+    def _update_compare_ui(self):
+        others = len(self.compare_runs) - 1
+        self._compare_btn.setText(
+            self.tr("Compare ({0})").format(others) if others else self.tr("Compare")
+        )
+        self._setpoint_group.setVisible(self._compare_mode())
+
+    def _open_compare_menu(self):
         menu = QMenu(self)
-        for col in self.detail.get("numeric_columns", []):
-            self._add_channel_menu_row(menu, col)
-
-        if self._available_derived:
+        others = [r for r in self.all_runs if r.get("key") != self.run_key]
+        if not others:
+            menu.addAction(self.tr("No other runs to compare")).setEnabled(False)
+        for run in others[:MAX_COMPARE_MENU_RUNS]:
+            act = menu.addAction(run.get("id", run["key"]))
+            act.setCheckable(True)
+            act.setChecked(run["key"] in self.compare_runs)
+            act.toggled.connect(lambda checked, k=run["key"]: self.set_compare_run(k, checked))
+        if len(others) > MAX_COMPARE_MENU_RUNS:
+            more = menu.addAction(
+                self.tr("{0} more: tick them in the runs list").format(
+                    len(others) - MAX_COMPARE_MENU_RUNS
+                )
+            )
+            more.setEnabled(False)
+        if self._compare_mode():
             menu.addSeparator()
-            header = menu.addAction(self.tr("DERIVED VARIABLES"))
-            header.setEnabled(False)
-            for d in self._available_derived:
-                self._add_channel_menu_row(menu, d["name"], tooltip=self._derived_tooltip(d))
+            menu.addAction(self.tr("Clear comparison"), self._clear_comparison)
+        menu.exec(self._compare_btn.mapToGlobal(self._compare_btn.rect().bottomLeft()))
 
-        menu.addSeparator()
-        manage_action = menu.addAction(self.tr("Manage Derived Variables…"))
-        manage_action.triggered.connect(self._open_derived_variables_dialog)
-
-        menu.exec(self._ch_btn.mapToGlobal(self._ch_btn.rect().bottomLeft()))
+    def _clear_comparison(self):
+        for key in [k for k in self.compare_runs if k != self.run_key]:
+            self.compare_runs.discard(key)
+        self.set_compare_run(self.run_key, True)
 
     def _open_derived_variables_dialog(self):
         from app.derived_variables_dialog import DerivedVariablesDialog
@@ -413,48 +758,21 @@ class RunTabPage(QWidget):
         }.get(definition["type"], definition["type"])
         return f"{kind}: {definition.get('expression') or definition.get('source_channel', '')}"
 
-    def _add_channel_menu_row(self, menu, col, tooltip=None):
-        wa = QWidgetAction(menu)
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(10, 4, 10, 4)
-        rl.setSpacing(10)
-
-        cb = QCheckBox(col)
-        cb.setChecked(col in self.selected_columns)
-        if tooltip:
-            cb.setToolTip(tooltip)
-        cb.stateChanged.connect(lambda state, c=col: self._set_channel_active(c, bool(state)))
-
-        swatch = QPushButton()
-        swatch.setFixedSize(16, 16)
-        color = self._channel_colors.get(col, COLORS[0])
-        swatch.setStyleSheet(
-            f"background:{color};border:1px solid rgba(255,255,255,0.25);border-radius:3px;"
-        )
-        swatch.clicked.connect(lambda _, c=col, m=menu: self._pick_channel_color(c, m))
-
-        rl.addWidget(cb, 1)
-        rl.addWidget(swatch)
-        wa.setDefaultWidget(row)
-        menu.addAction(wa)
-
     def _set_channel_active(self, col, active):
         if active:
             self.selected_columns.add(col)
         else:
             self.selected_columns.discard(col)
-        self._update_ch_btn_label()
+        self.side_bar.set_subtitle("channels", self.channel_list.shown_text())
         self._load_series()
         settings_service.save_channels(self.run_key, sorted(self.selected_columns))
+        if self._statistics_dialog.isVisible():
+            self._refresh_range_statistics()
 
-    def _pick_channel_color(self, col, menu):
-        menu.close()
-        current = QColor(self._channel_colors.get(col, COLORS[0]))
-        picked = QColorDialog.getColor(current, self, self.tr("Color — {0}").format(col))
-        if picked.isValid():
-            self._channel_colors[col] = picked.name()
-            self.refresh_chart()
+    def _set_channel_color(self, col, color):
+        self._channel_colors[col] = color
+        self._update_ch_btn_label()
+        self.refresh_chart()
 
     def _load_series(self):
         cols = list(self.selected_columns)
@@ -464,10 +782,6 @@ class RunTabPage(QWidget):
             return
         try:
             if self._compare_mode():
-                # Derived variables aren't supported in compare mode: each
-                # compared run would need its own source-channel fetch and
-                # its own availability check, and the primary use case
-                # (comparing one real channel across runs) doesn't need them.
                 ch = self._first_col()
                 series = []
                 for key in self.compare_runs:
@@ -532,11 +846,9 @@ class RunTabPage(QWidget):
                     definition, columns_data, elapsed
                 )
             except derived_variables_service.DerivedVariableError:
-                continue  # already checked for availability; a runtime failure just omits it
+                continue
             for point, value in zip(points, computed, strict=False):
-                point["values"][definition["name"]] = (
-                    None if value != value else float(value)
-                )  # NaN -> None
+                point["values"][definition["name"]] = None if value != value else float(value)
 
     def refresh_chart(self):
         setpoint = None
@@ -554,6 +866,7 @@ class RunTabPage(QWidget):
             )
         self._draw_rules_on_chart()
         self._draw_user_annotations()
+        self._draw_analysis_markers()
         self._update_time_controls()
 
     def _update_time_controls(self):
@@ -577,12 +890,14 @@ class RunTabPage(QWidget):
             ch.set_time_range(None, None)
         self._update_time_controls()
 
+    def _zoom_to(self, start, end):
+        """Zooms to a time range."""
+        self.chart.region.setVisible(False)
+        self.chart.auto_range_on_draw = False
+        self.chart.plot.setXRange(float(start), float(end), padding=0)
+
     def _set_smoothing(self, value):
-        if value > 1 and value % 2 == 0:
-            value += 1
-            self.smoothing.blockSignals(True)
-            self.smoothing.setValue(value)
-            self.smoothing.blockSignals(False)
+        value = int(value or 1)
         for ch in self._active_charts():
             ch.set_smoothing_window(value)
 
@@ -606,12 +921,7 @@ class RunTabPage(QWidget):
     def _reset_views(self):
         for ch in self._active_charts():
             ch.reset_view()
-
-    # ── Annotations ───────────────────────────────────────────────────────────
-
-    def _toggle_annotate_mode(self, checked: bool):
-        self.chart.set_annotate_mode(checked)
-        self._ann_btn.setText(self.tr("Done") if checked else self.tr("Annotate"))
+        self._update_time_controls()
 
     def _on_annotation_committed(self, ann: dict):
         saved = annotations_service.add_annotation(
@@ -624,7 +934,7 @@ class RunTabPage(QWidget):
             color=ann["color"],
         )
         self._user_annotations.append(saved)
-        self._ann_btn.setChecked(False)
+        self.tools.set_tool("inspect")
         self._refresh_annotations_list()
         self.refresh_chart()
 
@@ -635,126 +945,165 @@ class RunTabPage(QWidget):
         self._refresh_annotations_list()
         self.refresh_chart()
 
+    def _build_annotations_panel(self):
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        hint = QLabel(
+            self.tr(
+                "Annotations of this run. To add one, press Annotate and drag across the chart."
+            )
+        )
+        hint.setObjectName("analysisMeta")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        self._ann_table = _make_table(
+            [
+                "",
+                self.tr("LABEL"),
+                self.tr("FROM"),
+                self.tr("TO"),
+                self.tr("DURATION"),
+                self.tr("BY"),
+            ],
+            1,
+        )
+        self._ann_table.verticalHeader().setDefaultSectionSize(30)
+        lay.addWidget(self._ann_table, 1)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        show_btn = QPushButton(self.tr("Show on chart"))
+        remove_btn = QPushButton(self.tr("Remove"))
+        close_btn = QPushButton(self.tr("Close"))
+        close_btn.setObjectName("primaryButton")
+        for b in (show_btn, remove_btn, close_btn):
+            b.setMinimumWidth(110)
+        buttons.addWidget(show_btn)
+        buttons.addWidget(remove_btn)
+        buttons.addStretch(1)
+        buttons.addWidget(close_btn)
+        lay.addLayout(buttons)
+
+        def selected_row():
+            rows = self._ann_table.selectionModel().selectedRows()
+            return rows[0].row() if rows else -1
+
+        def update_buttons():
+            any_selected = selected_row() >= 0
+            show_btn.setEnabled(any_selected)
+            remove_btn.setEnabled(any_selected)
+
+        def show_on_chart(row=None):
+            row = selected_row() if row is None else row
+            if not 0 <= row < len(self._user_annotations):
+                return
+            ann = self._user_annotations[row]
+            margin = max(30.0, 0.15 * (ann["x1"] - ann["x0"]))
+            self._zoom_to(max(0.0, ann["x0"] - margin), ann["x1"] + margin)
+
+        def remove():
+            row = selected_row()
+            if not 0 <= row < len(self._user_annotations):
+                return
+            label = self._user_annotations[row].get("label", "")
+            answer = QMessageBox.question(
+                self,
+                self.tr("Remove annotation"),
+                self.tr('Remove the annotation "{0}"?').format(label),
+            )
+            if answer == QMessageBox.Yes:
+                self._delete_user_annotation(row)
+
+        self._ann_table.itemSelectionChanged.connect(update_buttons)
+        self._ann_table.cellDoubleClicked.connect(lambda row, _col: show_on_chart(row))
+        show_btn.clicked.connect(lambda: show_on_chart())
+        remove_btn.clicked.connect(remove)
+        close_btn.clicked.connect(lambda: panel.window().close())
+        update_buttons()
+        return panel
+
     def _refresh_annotations_list(self):
-        if self._ann_list_layout is None:
-            return
-        while self._ann_list_layout.count():
-            item = self._ann_list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        for idx, ann in enumerate(self._user_annotations):
-            row = QFrame()
-            row.setObjectName("ruleRow")
-            rlay = QHBoxLayout(row)
-            rlay.setContentsMargins(6, 3, 6, 3)
-            rlay.setSpacing(10)
-            swatch = QLabel("■")
-            swatch.setStyleSheet(
-                f"color: {ann['color']}; background: transparent; font-size: 14px;"
-            )
-            desc = QLabel(
-                self.tr("<b>{0}</b>  ·  {1:.1f} – {2:.1f} s  ·  {3}").format(
-                    ann["label"], ann["x0"], ann["x1"], ann.get("user_name", "Unknown")
-                )
-            )
-            desc.setStyleSheet("background: transparent;")
-            del_btn = QPushButton("✕")
-            del_btn.setObjectName("tabClose")
-            del_btn.setFixedSize(22, 22)
-            del_btn.clicked.connect(lambda _=False, i=idx: self._delete_user_annotation(i))
-            rlay.addWidget(swatch)
-            rlay.addWidget(desc, 1)
-            rlay.addWidget(del_btn)
-            self._ann_list_layout.addWidget(row)
+        table = self._ann_table
+        table.setRowCount(len(self._user_annotations))
+        for row, ann in enumerate(self._user_annotations):
+            cells = [
+                QTableWidgetItem(_swatch_icon(ann.get("color", "#60a5fa")), ""),
+                QTableWidgetItem(ann.get("label", "")),
+                QTableWidgetItem(_duration(ann["x0"])),
+                QTableWidgetItem(_duration(ann["x1"])),
+                QTableWidgetItem(_duration(ann["x1"] - ann["x0"])),
+                QTableWidgetItem(ann.get("user_name", "Unknown")),
+            ]
+            cells[2].setToolTip(f"{ann['x0']:.1f} s")
+            cells[3].setToolTip(f"{ann['x1']:.1f} s")
+            for col, item in enumerate(cells):
+                table.setItem(row, col, item)
 
     def _draw_user_annotations(self):
         for ann in self._user_annotations:
             self.chart.add_x_annotation(ann["x0"], ann["x1"], ann["label"], ann["color"])
 
-    def _build_annotations_card(self):
-        card = QFrame()
-        card.setObjectName("card")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(6)
-        hdr = QHBoxLayout()
-        hdr.addWidget(self._sec_lbl(self.tr("ANNOTATIONS")))
-        info = QLabel(
-            self.tr("Click 'Annotate', then drag on the chart to mark a time range and label it.")
-        )
-        info.setObjectName("sectionLabel")
-        info.setWordWrap(True)
-        hdr.addWidget(info, 1)
-        lay.addLayout(hdr)
-        self._ann_list_widget = QWidget()
-        self._ann_list_layout = QVBoxLayout(self._ann_list_widget)
-        self._ann_list_layout.setContentsMargins(0, 2, 0, 0)
-        self._ann_list_layout.setSpacing(3)
-        lay.addWidget(self._ann_list_widget)
-        return card
-
-    # ── Variable rules ────────────────────────────────────────────────────────
-
-    def _build_rules_card(self):
-        card = QFrame()
-        card.setObjectName("card")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(10, 10, 10, 10)
+    def _build_rules_panel(self):
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
 
-        hdr = QHBoxLayout()
-        hdr.addWidget(self._sec_lbl(self.tr("VARIABLE RULES")))
-        info = QLabel(
-            self.tr("Highlight acceptable ranges on the Y-axis when the channel is plotted.")
+        hint = QLabel(
+            self.tr(
+                "Highlight acceptable ranges of a channel on the chart. Values outside them "
+                "are reported as anomalies."
+            )
         )
-        info.setObjectName("sectionLabel")
-        info.setWordWrap(True)
-        hdr.addWidget(info, 1)
-        lay.addLayout(hdr)
+        hint.setObjectName("analysisMeta")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
 
-        form = QHBoxLayout()
-        form.setSpacing(6)
         self._rule_ch_combo = QComboBox()
-        self._rule_ch_combo.setFixedWidth(110)
+        self._rule_ch_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._rule_ch_combo.setMinimumContentsLength(16)
         self._rule_lo_ed = QLineEdit()
         self._rule_lo_ed.setPlaceholderText(self.tr("min"))
-        self._rule_lo_ed.setFixedWidth(72)
         self._rule_hi_ed = QLineEdit()
         self._rule_hi_ed.setPlaceholderText(self.tr("max"))
-        self._rule_hi_ed.setFixedWidth(72)
         self._rule_name_ed = QLineEdit()
         self._rule_name_ed.setPlaceholderText(self.tr("label"))
-        self._rule_name_ed.setFixedWidth(100)
+        for ed in (self._rule_lo_ed, self._rule_hi_ed, self._rule_name_ed):
+            ed.setFixedWidth(100)
         self._rule_color_combo = QComboBox()
-        for name, _ in RULE_COLOR_OPTIONS:
-            self._rule_color_combo.addItem(self.tr(name))
-        self._rule_color_combo.setFixedWidth(90)
-        add_btn = QPushButton(self.tr("Add Rule"))
+        for name, color in RULE_COLOR_OPTIONS:
+            self._rule_color_combo.addItem(_swatch_icon(color), self.tr(name))
+        add_btn = QPushButton(self.tr("Add rule"))
         add_btn.setObjectName("primaryButton")
         add_btn.clicked.connect(self._add_var_rule)
 
-        for cap, w in [
-            (self.tr("Channel"), self._rule_ch_combo),
-            (self.tr("Min"), self._rule_lo_ed),
-            (self.tr("Max"), self._rule_hi_ed),
-            (self.tr("Label"), self._rule_name_ed),
-            (self.tr("Color"), self._rule_color_combo),
-            ("", add_btn),
-        ]:
-            if cap:
-                lbl = QLabel(cap)
-                lbl.setObjectName("sectionLabel")
-                form.addWidget(lbl)
+        form = FlowLayout(spacing=6)
+        for w in (
+            self._rule_ch_combo,
+            self._rule_lo_ed,
+            self._rule_hi_ed,
+            self._rule_name_ed,
+            self._rule_color_combo,
+            add_btn,
+        ):
             form.addWidget(w)
-        form.addStretch(1)
-        lay.addLayout(form)
+        form_box = _FlowBox()
+        form_box.setLayout(form)
+        lay.addWidget(form_box)
 
-        self._rules_list_widget = QWidget()
-        self._rules_list_layout = QVBoxLayout(self._rules_list_widget)
-        self._rules_list_layout.setContentsMargins(0, 2, 0, 0)
-        self._rules_list_layout.setSpacing(3)
-        lay.addWidget(self._rules_list_widget)
-        return card
+        list_row = QHBoxLayout()
+        self._rules_list = QListWidget()
+        self._rules_list.setMinimumHeight(100)
+        remove_btn = QPushButton(self.tr("Remove"))
+        remove_btn.clicked.connect(self._remove_selected_rule)
+        list_row.addWidget(self._rules_list, 1)
+        list_row.addWidget(remove_btn, 0, Qt.AlignTop)
+        lay.addLayout(list_row, 1)
+        return panel
 
     def _update_rule_channel_combo(self):
         if not self._rule_ch_combo:
@@ -773,8 +1122,8 @@ class RunTabPage(QWidget):
         ch = self._rule_ch_combo.currentText() if self._rule_ch_combo else ""
         if not ch:
             return
-        lo_text = self._rule_lo_ed.text().strip()
-        hi_text = self._rule_hi_ed.text().strip()
+        lo_text = self._rule_lo_ed.text().strip().replace(",", ".")
+        hi_text = self._rule_hi_ed.text().strip().replace(",", ".")
         try:
             lo = float(lo_text) if lo_text else None
             hi = float(hi_text) if hi_text else None
@@ -797,47 +1146,38 @@ class RunTabPage(QWidget):
         self._rule_lo_ed.clear()
         self._rule_hi_ed.clear()
         self._rule_name_ed.clear()
-        self._refresh_rules_list()
-        self.refresh_chart()
+        self._rules_changed()
+
+    def _remove_selected_rule(self):
+        item = self._rules_list.currentItem()
+        if item is not None:
+            self._remove_var_rule(item.data(Qt.UserRole))
 
     def _remove_var_rule(self, idx):
         if 0 <= idx < len(self._var_rules):
             rule = self._var_rules.pop(idx)
             annotations_service.delete_rule(rule["id"])
+        self._rules_changed()
+
+    def _rules_changed(self):
+        self._analysis = None
         self._refresh_rules_list()
         self.refresh_chart()
+        if self._statistics_dialog.isVisible():
+            self._refresh_statistics()
 
     def _refresh_rules_list(self):
-        while self._rules_list_layout.count():
-            item = self._rules_list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._rules_list.clear()
         for idx, rule in enumerate(self._var_rules):
-            row = QFrame()
-            row.setObjectName("ruleRow")
-            rlay = QHBoxLayout(row)
-            rlay.setContentsMargins(6, 3, 6, 3)
-            rlay.setSpacing(10)
-            swatch = QLabel("■")
-            swatch.setStyleSheet(
-                f"color: {rule['color']}; background: transparent; font-size: 14px;"
-            )
             lo_str = f"{rule['lo']:g}" if rule["lo"] is not None else "−∞"
             hi_str = f"{rule['hi']:g}" if rule["hi"] is not None else "+∞"
-            desc = QLabel(
-                self.tr("<b>{0}</b>  ·  {1}  [{2} , {3}]  ·  {4}").format(
-                    rule["name"], rule["channel"], lo_str, hi_str, rule.get("user_name", "Unknown")
-                )
+            item = QListWidgetItem(
+                _swatch_icon(rule.get("color", "#60a5fa")),
+                f"{rule['name']}  ·  {rule['channel']}  [{lo_str} … {hi_str}]  ·  "
+                f"{rule.get('user_name', 'Unknown')}",
             )
-            desc.setStyleSheet("background: transparent;")
-            del_btn = QPushButton("✕")
-            del_btn.setObjectName("tabClose")
-            del_btn.setFixedSize(22, 22)
-            del_btn.clicked.connect(lambda _=False, i=idx: self._remove_var_rule(i))
-            rlay.addWidget(swatch)
-            rlay.addWidget(desc, 1)
-            rlay.addWidget(del_btn)
-            self._rules_list_layout.addWidget(row)
+            item.setData(Qt.UserRole, idx)
+            self._rules_list.addItem(item)
 
     def _draw_rules_on_chart(self):
         for rule in self._var_rules:
@@ -858,38 +1198,630 @@ class RunTabPage(QWidget):
                     hi, self.tr("{0} max").format(name), color, overlay=True
                 )
 
-    # ── Exports (DeepVac Control's Export menu) ─────────────────────────────
+    def _run_data(self, key):
+        """Returns the run's input and analysis."""
+        from app.api.runs import RunCatalogue
 
-    def _build_export_menu(self, parent):
-        menu = QMenu(parent)
-        images = menu.addMenu(self.tr("Chart image"))
-        for label, fmt_ in (
-            (self.tr("PNG…"), "png"),
-            (self.tr("BMP…"), "bmp"),
-            (self.tr("JPEG…"), "jpg"),
+        if self._catalogue is None:
+            self._catalogue = RunCatalogue()
+        return self._catalogue.load(self._catalogue.entry_for_key(key))
+
+    def _own_analysis(self):
+        """Returns the run's analysis, or None."""
+        if self._analysis is None:
+            from app.core.analysis import ExperimentInput, analyse_experiment
+            from app.core.analysis.anomalies import LimitRule
+            from app.core.analysis.common import NaN
+
+            try:
+                stored, _ = self._run_data(self.run_key)
+            except Exception:
+                return None
+            rules = [
+                LimitRule(
+                    r["channel"],
+                    NaN if r["lo"] is None else r["lo"],
+                    NaN if r["hi"] is None else r["hi"],
+                    r["name"],
+                )
+                for r in self._var_rules
+            ]
+            self._analysis = analyse_experiment(
+                ExperimentInput(stored.times, stored.channels, rules)
+            )
+        return self._analysis
+
+    def _draw_analysis_markers(self):
+        if self._compare_mode():
+            return
+        if not (self.mk_stages.isChecked() or self.mk_anomalies.isChecked()):
+            return
+        analysis = self._own_analysis()
+        if analysis is None:
+            return
+        if self.mk_stages.isChecked():
+            for stage in analysis.run.stages:
+                s = stage.segment
+                self.chart.add_x_annotation(s.start, s.end, "", STAGE_COLORS.get(s.kind, "#64748b"))
+        if self.mk_anomalies.isChecked():
+            for a in analysis.anomalies:
+                end = a.end if a.end > a.start else a.start + 1.0
+                self.chart.add_x_annotation(
+                    a.start,
+                    end,
+                    a.kind.replace("_", " "),
+                    SEVERITY_COLORS.get(a.severity, "#64748b"),
+                )
+
+    def _build_statistics_panel(self):
+        tabs = QTabWidget()
+        tabs.setObjectName("flatTabs")
+        tabs.setDocumentMode(True)
+        tabs.tabBar().setExpanding(False)
+
+        range_page = QWidget()
+        range_lay = QVBoxLayout(range_page)
+        range_lay.setContentsMargins(0, 6, 0, 0)
+        self._range_label = QLabel()
+        self._range_label.setObjectName("analysisMeta")
+        self._range_table = _make_table(
+            [
+                self.tr("Channel"),
+                self.tr("n"),
+                self.tr("Missing"),
+                self.tr("Min"),
+                self.tr("Max"),
+                self.tr("Mean"),
+                self.tr("Std"),
+                self.tr("RMS"),
+                self.tr("Slope /min"),
+                self.tr("P95"),
+            ],
+            0,
+        )
+        self._range_kpi_label = QLabel()
+        self._range_kpi_label.setWordWrap(True)
+        self._range_kpi_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        range_lay.addWidget(self._range_label)
+        range_lay.addWidget(self._range_table, 1)
+        range_lay.addWidget(self._range_kpi_label)
+
+        kpi_page = QWidget()
+        kpi_lay = QVBoxLayout(kpi_page)
+        kpi_lay.setContentsMargins(0, 6, 0, 0)
+        tiles = QHBoxLayout()
+        tiles.setSpacing(16)
+        self._kpi_tiles = []
+        for title in (
+            self.tr("MAE"),
+            self.tr("RMSE"),
+            self.tr("Max error"),
+            self.tr("Overshoot"),
+            self.tr("Undershoot"),
+            self.tr("Settling"),
+            self.tr("Tail MAE"),
         ):
-            images.addAction(label, lambda *_, f=fmt_: self.export_chart_image(f))
-        data_menu = menu.addMenu(self.tr("Data"))
-        data_menu.addAction(
-            self.tr("Whole experiment (CSV)…"), lambda *_: self.export_run_data(False, False)
+            tile = QWidget()
+            tile_lay = QVBoxLayout(tile)
+            tile_lay.setContentsMargins(0, 0, 0, 0)
+            tile_lay.setSpacing(1)
+            name = QLabel(title)
+            name.setObjectName("kpiName")
+            value = QLabel("—")
+            value.setObjectName("kpiValue")
+            tile_lay.addWidget(name)
+            tile_lay.addWidget(value)
+            tiles.addWidget(tile, 1)
+            self._kpi_tiles.append(value)
+        self._kpi_label = QLabel()
+        self._kpi_label.setObjectName("analysisMeta")
+        self._kpi_label.setWordWrap(True)
+        self._kpi_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._stages_table = _make_table(
+            [
+                "#",
+                self.tr("Stage"),
+                self.tr("Interval"),
+                self.tr("Cycle"),
+                self.tr("Start"),
+                self.tr("Duration"),
+                self.tr("Setpoint"),
+                self.tr("MAE"),
+                self.tr("Overshoot"),
+                self.tr("Settling"),
+                self.tr("Rise / fall"),
+                self.tr("Steady-state error"),
+                self.tr("Steady after"),
+                self.tr("Steady"),
+                self.tr("Saturated"),
+                self.tr("P / I / D"),
+                self.tr("Kp / Ki / Kd"),
+            ],
+            16,
         )
-        data_menu.addAction(
-            self.tr("Whole experiment (TXT)…"), lambda *_: self.export_run_data(False, True)
+        self._stages_table.setToolTip(self.tr("Click a stage to zoom to it"))
+        self._stages_table.cellClicked.connect(self._zoom_to_stage)
+        kpi_lay.addLayout(tiles)
+        kpi_lay.addWidget(self._kpi_label)
+        kpi_lay.addWidget(self._stages_table, 1)
+
+        anomaly_page = QWidget()
+        anomaly_lay = QVBoxLayout(anomaly_page)
+        anomaly_lay.setContentsMargins(0, 6, 0, 0)
+        self._anomaly_label = QLabel()
+        self._anomaly_label.setObjectName("analysisMeta")
+        self._anomaly_label.setWordWrap(True)
+        self._anomaly_table = _make_table(
+            [
+                self.tr("Severity"),
+                self.tr("Type"),
+                self.tr("Channel"),
+                self.tr("Start"),
+                self.tr("Duration"),
+                self.tr("Detail"),
+            ],
+            5,
         )
-        data_menu.addSeparator()
-        data_menu.addAction(
-            self.tr("Visible range (CSV)…"), lambda *_: self.export_run_data(True, False)
+        self._anomaly_table.setToolTip(self.tr("Click an anomaly to zoom to it"))
+        self._anomaly_table.cellClicked.connect(self._zoom_to_anomaly)
+        anomaly_lay.addWidget(self._anomaly_label)
+        anomaly_lay.addWidget(self._anomaly_table, 1)
+
+        comparison_page = QWidget()
+        comparison_lay = QVBoxLayout(comparison_page)
+        comparison_lay.setContentsMargins(0, 6, 0, 0)
+        self._comparison_label = QLabel()
+        self._comparison_label.setObjectName("analysisMeta")
+        self._comparison_label.setWordWrap(True)
+        self._comparison_table = _make_table([self.tr("KPI")], 0)
+        comparison_lay.addWidget(self._comparison_label)
+        comparison_lay.addWidget(self._comparison_table, 1)
+
+        tabs.addTab(range_page, self.tr("Selected range"))
+        tabs.addTab(kpi_page, self.tr("KPIs && stages"))
+        tabs.addTab(anomaly_page, self.tr("Anomalies"))
+        tabs.addTab(comparison_page, self.tr("Comparison"))
+        return tabs
+
+    def _open_statistics(self):
+        self._show_dialog(self._statistics_dialog)
+        self._refresh_statistics()
+
+    def _refresh_statistics(self):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._refresh_run_kpis()
+            self._refresh_anomalies()
+            self._refresh_comparison()
+            self._refresh_range_statistics()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _compared_data(self):
+        """Returns this run and the compared runs."""
+        rows = []
+        for key in self._compared_keys() if self._compare_mode() else [self.run_key]:
+            try:
+                stored, analysis = self._run_data(key)
+            except Exception:
+                continue
+            if key == self.run_key:
+                analysis = self._own_analysis() or analysis
+            run = next((r for r in self.all_runs if r.get("key") == key), None)
+            rows.append((run["id"] if run else key, stored, analysis))
+        return rows
+
+    def _refresh_range_statistics(self):
+        if not self.detail or not self._statistics_dialog.isVisible():
+            return
+        start, end = self.chart.current_x_range()
+        self._range_label.setText(
+            self.tr("Visible range {0} – {1} (raw samples, before smoothing)").format(
+                _duration(max(0.0, start)), _duration(max(0.0, end))
+            )
         )
-        data_menu.addAction(
-            self.tr("Visible range (TXT)…"), lambda *_: self.export_run_data(True, True)
+        from app.core.analysis.seriesstats import compute_stats
+
+        rows = []
+        if self._compare_mode():
+            channel = self._compared_channel()
+            for title, stored, _ in self._compared_data():
+                if channel in stored.channels:
+                    rows.append((title, stored.times, stored.channels[channel]))
+        else:
+            try:
+                stored, _ = self._run_data(self.run_key)
+            except Exception:
+                stored = None
+            points = (self.series or {}).get("points", [])
+            first_t = next((p.get("t") for p in points if _finite(p.get("t"))), None)
+            for col in sorted(self.selected_columns):
+                if stored is not None and col in stored.channels:
+                    rows.append((col, stored.times, stored.channels[col]))
+                elif points and first_t is not None:
+                    times = [(p.get("t") or first_t) - first_t for p in points]
+                    values = [p["values"].get(col) for p in points]
+                    values = [v if _finite(v) else math.nan for v in values]
+                    rows.append((col, times, values))
+
+        cells = []
+        for label, times, values in rows:
+            s = compute_stats(times, values, start, end)
+            slope = s.slope_per_s * 60.0 if _finite(s.slope_per_s) else math.nan
+            cells.append(
+                [
+                    label,
+                    s.n,
+                    s.missing,
+                    _stat(s.min),
+                    _stat(s.max),
+                    _stat(s.mean),
+                    _stat(s.std),
+                    _stat(s.rms),
+                    _stat(slope),
+                    _stat(s.p95),
+                ]
+            )
+        _fill_table(self._range_table, cells)
+        self._refresh_range_kpis(start, end)
+
+    def _refresh_range_kpis(self, start, end):
+        from app.core.analysis.runanalysis import analyse_run
+
+        lines = []
+        runs = self._compared_data()
+        for title, stored, _ in runs:
+            ch = stored.channels
+            if "temp" not in ch or "temp_ref" not in ch:
+                lines.append(
+                    self.tr("<b>{0}</b>: control KPIs need the channels temp and temp_ref.").format(
+                        title
+                    )
+                )
+                continue
+            keep = [i for i, t in enumerate(stored.times) if start <= t <= end]
+
+            def sliced(name, keep=keep, ch=ch):
+                return [ch[name][i] for i in keep] if name in ch else []
+
+            a = analyse_run(
+                [stored.times[i] for i in keep],
+                sliced("temp"),
+                sliced("temp_ref"),
+                sliced("interval"),
+                sliced("cycle_cur"),
+            )
+            name = f"<b>{title}</b>: " if len(runs) > 1 else self.tr("<b>Control in range</b> ")
+            if a.overall.samples == 0:
+                lines.append(name + self.tr("no setpoint (temp_ref) in this range."))
+                continue
+            counts = {}
+            for stage in a.stages:
+                counts[stage.segment.kind] = counts.get(stage.segment.kind, 0) + 1
+            stages = ", ".join(
+                f'<span style="color:{STAGE_COLORS.get(kind, "#64748b")}">{kind}</span> ×{n}'
+                for kind, n in counts.items()
+            )
+            k = a.overall
+            lines.append(
+                name
+                + self.tr(
+                    "(temp vs temp_ref, {0} samples): MAE {1} · RMSE {2} · max |error| {3} · "
+                    "overshoot {4} · undershoot {5} · settling {6} · steady-state error {7} · "
+                    "tail MAE {8} · tail std {9} · stages: {10}"
+                ).format(
+                    k.samples,
+                    _stat(k.mae),
+                    _stat(k.rmse),
+                    _stat(k.max_abs_error),
+                    _stat(a.overshoot),
+                    _stat(a.undershoot),
+                    _duration(a.settling_time_s),
+                    _stat(k.steady_state_error),
+                    _stat(k.tail_mae),
+                    _stat(k.tail_std),
+                    stages or "—",
+                )
+            )
+        self._range_kpi_label.setText("<br>".join(lines))
+
+    def _refresh_run_kpis(self):
+        from app.core.analysis.steadystate import steady_fraction
+
+        a = self._own_analysis()
+        if a is None or not a.has_control:
+            for tile in self._kpi_tiles:
+                tile.setText("—")
+            cols = set((self.detail or {}).get("numeric_columns", []))
+            if a is None:
+                text = self.tr("The run's samples could not be read.")
+            elif not {"temp", "temp_ref"} <= cols:
+                text = self.tr("KPIs need the channels temp and temp_ref.")
+            else:
+                text = self.tr(
+                    "No setpoint (temp_ref) was recorded in this run, so there are no KPIs or stages."
+                )
+            self._kpi_label.setText(text)
+            self._stages_table.setRowCount(0)
+            return
+
+        k = a.run.overall
+        c = a.config
+
+        def degrees(v):
+            return f"{_stat(v)} °C" if _finite(v) else "—"
+
+        values = [
+            degrees(k.mae),
+            degrees(k.rmse),
+            degrees(k.max_abs_error),
+            degrees(a.run.overshoot),
+            degrees(a.run.undershoot),
+            _duration(a.run.settling_time_s),
+            degrees(k.tail_mae),
+        ]
+        for tile, value in zip(self._kpi_tiles, values, strict=True):
+            tile.setText(value)
+
+        steady_share = math.nan
+        if a.run.stages:
+            steady_share = steady_fraction(
+                a.steady, a.run.stages[0].segment.start, a.run.stages[-1].segment.end
+            )
+        setpoints = " → ".join(_stat(s, 2) for s in c.setpoints) or "—"
+        gain_sets = self.tr(" ({0} gain sets)").format(c.gain_sets) if c.gain_sets > 1 else ""
+        warnings = a.anomaly_count("warning")
+        self._kpi_label.setText(
+            self.tr("<b>Run</b>: {0} samples · tail std {1}.").format(k.samples, _stat(k.tail_std))
+            + "<br>"
+            + self.tr(
+                "<b>Control</b>: steady {0} of the time · output saturated {1} (windup {2}) · "
+                "P / I / D share {3} · <b>configuration</b>: Kp {4}, Ki {5}, Kd {6}{7} · "
+                "setpoints {8} · {9} anomalies ({10} warning or worse)."
+            ).format(
+                _percent(steady_share),
+                _percent(a.saturation.fraction),
+                _duration(a.saturation.windup_s),
+                _pid_shares(a.pid),
+                _stat(c.kp),
+                _stat(c.ki),
+                _stat(c.kd),
+                gain_sets,
+                setpoints,
+                len(a.anomalies),
+                warnings,
+            )
         )
-        menu.addAction(self.tr("Comparison CSV…"), lambda *_: self.export_comparison_csv())
-        menu.addSeparator()
-        menu.addAction(self.tr("Experiment report (HTML)…"), lambda *_: self.export_report("html"))
-        menu.addAction(self.tr("Experiment report (PDF)…"), lambda *_: self.export_report("pdf"))
-        menu.addSeparator()
-        menu.addAction(self.tr("Experiment bundle (JSON)…"), lambda *_: self.export_bundle())
-        return menu
+
+        rows, colors = [], {}
+        for r, stage in enumerate(a.run.stages):
+            s = stage.segment
+            d = a.stage_details[r] if r < len(a.stage_details) else None
+            step = s.kind == "setpoint"
+            if (
+                _finite(s.reference_start)
+                and _finite(s.reference_end)
+                and (abs(s.reference_end - s.reference_start) >= 0.05)
+            ):
+                setpoint = f"{_stat(s.reference_start, 2)} → {_stat(s.reference_end, 2)}"
+            else:
+                setpoint = _stat(s.reference_end, 2)
+            kp = stage.kpis
+            transition = kp.rise_time_s if _finite(kp.rise_time_s) else kp.fall_time_s
+            rows.append(
+                [
+                    r + 1,
+                    s.kind.capitalize(),
+                    s.interval if s.interval >= 0 else "—",
+                    s.cycle if s.cycle >= 0 else "—",
+                    _duration(s.start),
+                    _duration(s.duration),
+                    setpoint,
+                    _stat(kp.mae),
+                    _stat(kp.overshoot) if step else "—",
+                    _duration(kp.settling_time_s) if step else "—",
+                    _duration(transition) if step else "—",
+                    _stat(kp.steady_state_error) if step else "—",
+                    _duration(d.time_to_steady_s) if d else "—",
+                    _percent(d.steady_fraction) if d else "—",
+                    _percent(d.saturation.fraction) if d else "—",
+                    _pid_shares(d.pid) if d else "—",
+                    f"{_stat(d.kp)} / {_stat(d.ki)} / {_stat(d.kd)}" if d else "—",
+                ]
+            )
+            colors[(r, 1)] = STAGE_COLORS.get(s.kind, "#64748b")
+        _fill_table(self._stages_table, rows, right_from=4, colors=colors)
+
+    def _refresh_anomalies(self):
+        a = self._own_analysis()
+        anomalies = a.anomalies if a is not None else []
+        if not anomalies:
+            self._anomaly_label.setText(
+                self.tr(
+                    "No anomalies detected (variable rules, spikes, flat signals, missing data, "
+                    "oscillation, setpoints not reached, long output saturation)."
+                )
+            )
+        else:
+            self._anomaly_label.setText(
+                self.tr("{0} anomalies, {1} warning or worse. Click one to zoom to it.").format(
+                    len(anomalies), a.anomaly_count("warning")
+                )
+            )
+        rows, colors = [], {}
+        for r, an in enumerate(anomalies):
+            rows.append(
+                [
+                    an.severity.capitalize(),
+                    an.kind.replace("_", " "),
+                    an.channel or "—",
+                    _duration(an.start),
+                    _duration(an.end - an.start),
+                    an.detail,
+                ]
+            )
+            colors[(r, 0)] = SEVERITY_COLORS.get(an.severity, "#64748b")
+        _fill_table(self._anomaly_table, rows, right_from=99, colors=colors)
+
+    def _refresh_comparison(self):
+        from app.core.analysis.comparison import compare_kpis
+
+        if not self._compare_mode():
+            self._comparison_label.setText(
+                self.tr("Press Compare (or tick runs in the runs list) to compare runs here.")
+            )
+            self._comparison_table.setColumnCount(1)
+            self._comparison_table.setHorizontalHeaderLabels([self.tr("KPI")])
+            self._comparison_table.setRowCount(0)
+            return
+        runs = self._compared_data()
+        self._comparison_label.setText(
+            self.tr("Headline KPIs side by side; the first run is the reference.")
+        )
+        table = self._comparison_table
+        table.setColumnCount(1 + len(runs))
+        table.setHorizontalHeaderLabels([self.tr("KPI")] + [title for title, _, _ in runs])
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        cells = []
+        for row in compare_kpis([a for _, _, a in runs]):
+            label = f"{row.label} ({row.unit})" if row.unit else row.label
+            texts = []
+            for v in row.values:
+                if row.unit == "s":
+                    texts.append(_duration(v))
+                elif row.unit == "%":
+                    texts.append(f"{_stat(v, 1)} %" if _finite(v) else "—")
+                else:
+                    texts.append(_stat(v))
+            cells.append([label, *texts])
+        _fill_table(table, cells)
+
+    def _zoom_to_stage(self, row, _column=0):
+        a = self._own_analysis()
+        if a is not None and 0 <= row < len(a.run.stages):
+            s = a.run.stages[row].segment
+            self._zoom_to(s.start, max(s.end, s.start + 1.0))
+
+    def _zoom_to_anomaly(self, row, _column=0):
+        a = self._own_analysis()
+        if a is not None and 0 <= row < len(a.anomalies):
+            an = a.anomalies[row]
+            margin = max(60.0, 0.5 * (an.end - an.start))
+            self._zoom_to(max(0.0, an.start - margin), an.end + margin)
+
+    def _open_export(self):
+        """Opens the Export panel."""
+        if self.side_bar.current() == "export":
+            self._prepare_export()
+        else:
+            self.side_bar.open_panel("export")
+
+    def _prepare_export(self):
+        """Sets up the Export panel for this run."""
+        from datetime import date
+
+        from app.services import day_recorder
+
+        panel = self.export_panel
+        panel.set_comparison_available(self._compare_mode())
+        start, end = self._run_span()
+        if start is not None:
+            panel.set_day(date.fromtimestamp(start), start, end)
+        else:
+            panel.set_day(date.today())
+        chambers = sorted({d["chamber"] for d in day_recorder.list_days()})
+        own = (self.detail or {}).get("run", {}).get("chamber")
+        panel.set_chambers(chambers, day_recorder.safe_name(own) if own else None)
+
+    def _run_span(self):
+        """Returns the run's time span."""
+        try:
+            stored, _ = self._run_data(self.run_key)
+            start = self._catalogue.entry_for_key(self.run_key).start_epoch
+        except Exception:
+            return None, None
+        if not _finite(start) or not stored.times:
+            return None, None
+        return start, start + stored.times[-1]
+
+    def _recorded_target(self):
+        """The panel's day / custom range of the chosen chamber's recordings, as a run to export."""
+        panel = self.export_panel
+        return run_export.recorded_export(panel.chamber(), panel.from_epoch(), panel.to_epoch())
+
+    def _on_export_preview(self, range_):
+        from app.export_panel import show_data_preview
+
+        try:
+            target = self._recorded_target()
+        except Exception as exc:
+            QMessageBox.warning(self, self.tr("Preview"), str(exc))
+            return
+        self._preview_dialog = show_data_preview(self, target)
+
+    def _on_export_requested(self, fmt_, range_):
+        """Exports what the Export panel asks for."""
+        from app.export_panel import CUSTOM, DAY, EXPERIMENT, extension, is_data, is_image
+
+        if fmt_ == "comparison-csv":
+            done = self.export_comparison_csv()
+        elif fmt_ == "json":
+            done = self.export_bundle()
+        elif range_ in (DAY, CUSTOM):
+            done = self._export_recorded(fmt_)
+        elif is_image(fmt_):
+            done = (
+                self._export_whole_chart(extension(fmt_))
+                if range_ == EXPERIMENT
+                else self.export_chart_image(extension(fmt_))
+            )
+        elif is_data(fmt_):
+            done = self.export_run_data(range_ != EXPERIMENT, fmt_ == "txt")
+        else:
+            done = self.export_report(fmt_, visible_only=range_ != EXPERIMENT)
+        if done is not None:
+            self.side_bar.close_panel()
+
+    def _shown_channels(self, target):
+        return sorted(c for c in self.selected_columns if c in target.channels)
+
+    def _export_whole_chart(self, ext):
+        """Exports the chart of the whole run."""
+
+        def write(path):
+            target = self._export_target(self.run_key)
+            image, _, _ = run_export.run_chart(
+                target, channels=self._shown_channels(target) or None
+            )
+            run_export.save_image(image, path, ext)
+
+        return self._export(ext, write, "-run")
+
+    def _export_recorded(self, fmt_):
+        """An image, the data or a report of a day / custom range of the chamber's recordings."""
+        from app.export_panel import extension, is_data, is_image
+
+        panel = self.export_panel
+        ext = extension(fmt_)
+        suffix = f"-{panel.chamber()}-{int(panel.from_epoch())}"
+
+        def write(path):
+            target = self._recorded_target()
+            if is_image(fmt_):
+                image, _, _ = run_export.run_chart(
+                    target, channels=self._shown_channels(target) or None
+                )
+                run_export.save_image(image, path, ext)
+            elif is_data(fmt_):
+                run_export.write_data(target, path, None, None, None, fmt_ == "txt")
+            else:
+                run_export.write_report(
+                    target, path, fmt_, author=self.current_user.get("name") or ""
+                )
+
+        return self._export(ext, write, suffix)
 
     def _export_target(self, key, with_samples=False):
         from app.api.runs import RunCatalogue
@@ -909,7 +1841,7 @@ class RunTabPage(QWidget):
         return self._first_col() or "temp"
 
     def _ask_export_path(self, extension, suffix=""):
-        """File browser in the reports folder, named after the run (AnalysisRunPage::askExportPath)."""
+        """Asks where to save an export."""
         name = run_export.safe_name((self.detail or {}).get("run", {}).get("id", self.run_key))
         common.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         suggested = str(common.REPORTS_DIR / f"{name}{suffix}.{extension}")
@@ -926,7 +1858,7 @@ class RunTabPage(QWidget):
         return Path(path)
 
     def _export(self, extension, writer, suffix=""):
-        """Asks where, runs writer(path) with a wait cursor and says how it went."""
+        """Runs an export and reports the result."""
         if not self.detail:
             return None
         path = self._ask_export_path(extension, suffix)
@@ -936,9 +1868,7 @@ class RunTabPage(QWidget):
         try:
             writer(path)
             error = None
-        except (
-            Exception
-        ) as exc:  # shown to the user: a run without the channels, a file in use, ...
+        except Exception as exc:
             error = str(exc)
         finally:
             QApplication.restoreOverrideCursor()
@@ -972,7 +1902,9 @@ class RunTabPage(QWidget):
 
         return self._export("csv", write, "-comparison")
 
-    def export_report(self, fmt_="pdf"):
+    def export_report(self, fmt_="pdf", visible_only=True):
+        """Exports the run's report."""
+
         def write(path):
             target = self._export_target(self.run_key)
             first, compare = [], []
@@ -981,7 +1913,7 @@ class RunTabPage(QWidget):
             else:
                 shown = [c for c in self.selected_columns if c in target.channels]
                 if shown:
-                    lo, hi = self.chart.current_x_range()
+                    lo, hi = self.chart.current_x_range() if visible_only else (None, None)
                     image, _, _ = run_export.run_chart(
                         target, channels=sorted(shown), from_s=lo, to_s=hi
                     )

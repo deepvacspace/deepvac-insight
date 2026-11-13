@@ -1,11 +1,4 @@
-"""The Python Analysis Core (app/core/analysis) against control2-client's C++ one.
-
-tests/fixtures/analysis/cpp_oracle_cases.json.gz holds real runs and the summary
-the unmodified C++ core computed for each (ExperimentAnalysis::toJson(),
-analysis_version 2). The port must reproduce them: if this fails after a
-change on either side, the two apps would report different numbers for the
-same run.
-"""
+"""Tests of the Analysis Core against the C++ results."""
 
 import gzip
 import json
@@ -72,14 +65,13 @@ def test_percentile_interpolates_like_numpy():
 
 
 def test_number_rounds_ties_like_qt():
-    # QString::number(v, 'g', p) rounds an exact tie away from zero; Python's format rounds to even
     assert number(439.25, 4) == "439.3"
     assert number(-439.25, 4) == "-439.3"
     assert number(508.0097482204437, 4) == "508"
 
 
 def _step_response():
-    """Reference steps 20 -> 50 at t=0; the value approaches in 300 s, overshoots by 1 and settles."""
+    """Builds a step response sample set."""
     times = [float(t) for t in range(0, 1200, 2)]
     value = []
     for t in times:
@@ -98,11 +90,8 @@ def test_kpis_of_a_step_response():
     assert k.direction == 1
     assert k.overshoot == pytest.approx(1.0, abs=0.05)
     assert k.final_error == 0.0
-    # the overshoot is outside the 0.5 band from 325 to 374 s: the first sample back in it for good is 376 s
     assert k.settling_time_s == 376.0
-    assert k.rise_time_s == pytest.approx(
-        0.8 * 300, abs=4
-    )  # 10 % -> 90 % of a linear 300 s approach
+    assert k.rise_time_s == pytest.approx(0.8 * 300, abs=4)
 
 
 def test_segments_a_step_then_hold_and_a_ramp():
@@ -111,6 +100,6 @@ def test_segments_a_step_then_hold_and_a_ramp():
     assert kinds[0] == SETPOINT and HOLD in kinds
 
     ramp_times = [float(t) for t in range(0, 1800, 2)]
-    ramp_ref = [20.0 + min(t, 900.0) / 60.0 for t in ramp_times]  # 1 °C/min for 15 min, then hold
+    ramp_ref = [20.0 + min(t, 900.0) / 60.0 for t in ramp_times]
     kinds = [s.kind for s in segment_experiment(ramp_times, ramp_ref, ramp_ref)]
     assert RAMP in kinds and kinds[-1] == HOLD

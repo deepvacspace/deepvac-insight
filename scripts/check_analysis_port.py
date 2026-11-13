@@ -1,11 +1,4 @@
-"""Compares the Python Analysis Core with summaries the C++ app stored.
-
-Re-analyses every run of a control2-client run database whose summary_json
-has the current analysis_version, and reports runs whose recomputed summary
-differs. Read-only.
-
-    uv run python scripts/check_analysis_port.py path/to/deepvac_runs.sqlite3 [--limit N]
-"""
+"""Compares the Python Analysis Core with summaries the C++ app stored."""
 
 import argparse
 import json
@@ -60,7 +53,6 @@ def main():
     for key, summary_json, samples_json in conn.execute(query, params):
         expected = json.loads(summary_json)
         actual = analyse_experiment(experiment_input_from_json(samples_json)).to_json()
-        # round-trip through JSON so both sides have the same types
         actual = json.loads(json.dumps(actual))
         diffs = list(differences(expected, actual))
         checked += 1

@@ -1,10 +1,4 @@
-"""Splits an experiment into stages (port of core/analysis/segmentation.cpp).
-
-- ramp: the reference moves gradually;
-- setpoint: the reference is constant and the value is still moving towards it;
-- hold: the reference is constant and the value has reached it;
-- unknown: no reference recorded.
-"""
+"""Splits an experiment into stages."""
 
 import math
 from dataclasses import dataclass, replace
@@ -16,20 +10,20 @@ SETPOINT = "setpoint"
 HOLD = "hold"
 UNKNOWN = "unknown"
 
-RAMP_WINDOW_S = 120.0  # reference drift is measured over this centred window
-RAMP_NEIGHBOURS = 3  # samples on each side searched for similar reference changes
-RAMP_INCREMENT_RATIO = 3.0  # "similar": within this factor of each other
+RAMP_WINDOW_S = 120.0
+RAMP_NEIGHBOURS = 3
+RAMP_INCREMENT_RATIO = 3.0
 
 
 @dataclass
 class Segment:
     kind: str = UNKNOWN
-    first: int = 0  # sample indexes, inclusive
+    first: int = 0
     last: int = 0
-    start: float = 0.0  # times of first / last
+    start: float = 0.0
     end: float = 0.0
-    interval: int = -1  # PLC program interval (1-based), -1 when not recorded
-    cycle: int = -1  # PLC program cycle, -1 when not recorded
+    interval: int = -1
+    cycle: int = -1
     reference_start: float = NaN
     reference_end: float = NaN
 
@@ -40,9 +34,9 @@ class Segment:
 
 @dataclass
 class SegmentationOptions:
-    reference_tolerance: float = 0.05  # reference changes smaller than this are noise
-    settle_band: float = 0.5  # setpoint ends / hold starts when |reference - value| gets this small
-    min_duration_s: float = 30.0  # shorter stages are merged into the previous one
+    reference_tolerance: float = 0.05
+    settle_band: float = 0.5
+    min_duration_s: float = 30.0
 
 
 def _to_int(values, i: int) -> int:
@@ -50,7 +44,7 @@ def _to_int(values, i: int) -> int:
 
 
 def filled_reference(reference, n: int) -> list[float]:
-    """NaN gaps of the reference take the last known value (the first known one before it)."""
+    """Fills the reference's gaps with the last known value."""
     filled = [NaN] * n
     last = NaN
     for i in range(n):
@@ -69,9 +63,7 @@ def filled_reference(reference, n: int) -> list[float]:
 def segment_experiment(
     times, value, reference, interval=(), cycle=(), options: SegmentationOptions | None = None
 ) -> list[Segment]:
-    """Boundaries come from the recorded PLC program position (interval / cycle
-    changes) when available, and from the reference itself (steps, ramp start /
-    end). Any of interval, cycle, reference, value may be empty."""
+    """Splits an experiment into stages."""
     options = options or SegmentationOptions()
     n = len(times)
     if n == 0:
@@ -79,13 +71,10 @@ def segment_experiment(
     ref = filled_reference(reference, n)
     have_reference = valid(ref[0])
 
-    # reference drift without its steps, to tell ramps from steps
     delta = [0.0] * n
     for i in range(1, n):
         delta[i] = ref[i] - ref[i - 1] if have_reference else 0.0
 
-    # a change is a step unless it is part of a ramp: a fast ramp moves more than the tolerance
-    # per sample, but then nearby samples change by a similar amount in the same direction
     def ramp_increment(i: int) -> bool:
         size = abs(delta[i])
         for k in range(max(1, i - RAMP_NEIGHBOURS), min(i + RAMP_NEIGHBOURS, n - 1) + 1):
@@ -114,7 +103,6 @@ def segment_experiment(
             while hi + 1 < n and times[hi + 1] <= times[i] + RAMP_WINDOW_S / 2.0:
                 hi += 1
             ramping[i] = abs(drift[hi] - drift[lo]) > options.reference_tolerance
-        # the centred window flags half a window before / after a ramp: keep only where it moves
         a = 0
         while a < n:
             if not ramping[a]:
@@ -137,7 +125,6 @@ def segment_experiment(
             return UNKNOWN
         return RAMP if ramping[i] else HOLD
 
-    # raw stages: a new one at every program position change, step, or ramp start / end
     stages: list[Segment] = []
     for i in range(n):
         kind = kind_at(i)
@@ -165,7 +152,6 @@ def segment_experiment(
         else:
             stages[-1].last = i
 
-    # constant reference: SETPOINT while the value approaches, HOLD once it got there
     split: list[Segment] = []
     for stage in stages:
         if stage.kind != HOLD:
@@ -184,7 +170,6 @@ def segment_experiment(
             split.append(replace(stage, kind=SETPOINT, last=reached_at - 1))
             split.append(replace(stage, first=reached_at))
 
-    # merge stages too short to mean anything into their neighbour (same program position)
     merged: list[Segment] = []
     for stage in split:
         duration = times[stage.last] - times[stage.first]
@@ -193,15 +178,12 @@ def segment_experiment(
             and merged[-1].interval == stage.interval
             and merged[-1].cycle == stage.cycle
         )
-        mergeable = (
-            same_position and not jump[stage.first]
-        )  # a reference step always starts a new stage
+        mergeable = same_position and not jump[stage.first]
         if mergeable and (duration < options.min_duration_s or merged[-1].kind == stage.kind):
             merged[-1].last = stage.last
         else:
             merged.append(replace(stage))
 
-    # a short stage at the start of a program position (or of the run) joins the next stage there
     i = 0
     while i + 1 < len(merged):
         stage, nxt = merged[i], merged[i + 1]

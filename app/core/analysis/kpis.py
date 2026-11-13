@@ -1,9 +1,4 @@
-"""Control-loop KPIs of a value following a reference (port of core/analysis/kpis.cpp).
-
-Error convention: error = reference - value (positive when the value is below
-the reference). Direction: +1 when the reference is above the initial value
-(heating), else -1 (cooling). Every KPI is NaN when it cannot be computed.
-"""
+"""Control-loop KPIs."""
 
 import math
 from dataclasses import dataclass
@@ -13,35 +8,35 @@ from app.core.analysis.common import NaN, valid
 
 @dataclass
 class KpiOptions:
-    settle_band: float = 0.5  # |error| band for settling time / steady state
-    near_band: float = 2.0  # |error| band for "time to near"
-    tail_window_s: float = 300.0  # tail statistics: the last N seconds
-    tail_end_s: float = NaN  # tail window ends here (elapsed s); NaN = last sample
-    initial_value: float = NaN  # value the transition starts from; NaN = first valid sample
-    start_time_s: float = NaN  # times are measured from here; NaN = first valid sample
-    rise_low: float = 0.1  # rise / fall time from 10 % ...
-    rise_high: float = 0.9  # ... to 90 % of the transition
+    settle_band: float = 0.5
+    near_band: float = 2.0
+    tail_window_s: float = 300.0
+    tail_end_s: float = NaN
+    initial_value: float = NaN
+    start_time_s: float = NaN
+    rise_low: float = 0.1
+    rise_high: float = 0.9
 
 
 @dataclass
 class ControlKpis:
-    samples: int = 0  # samples with both value and reference
+    samples: int = 0
     mae: float = NaN
     rmse: float = NaN
-    bias: float = NaN  # mean error
+    bias: float = NaN
     max_abs_error: float = NaN
-    overshoot: float = NaN  # max excursion beyond the reference in the approach direction
+    overshoot: float = NaN
     overshoot_rms: float = NaN
-    undershoot: float = NaN  # max excursion back after first reaching the reference
-    rise_time_s: float = NaN  # 10 -> 90 % of the transition when heating
-    fall_time_s: float = NaN  # ... when cooling
+    undershoot: float = NaN
+    rise_time_s: float = NaN
+    fall_time_s: float = NaN
     time_to_near_s: float = NaN
-    settling_time_s: float = NaN  # until |error| enters settle_band and stays there
-    steady_state_error: float = NaN  # mean error after settling
+    settling_time_s: float = NaN
+    steady_state_error: float = NaN
     tail_mae: float = NaN
     tail_bias: float = NaN
-    tail_std: float = NaN  # population std of the value over the tail window
-    near_std: float = NaN  # std of the value while |error| <= near_band
+    tail_std: float = NaN
+    near_std: float = NaN
     final_error: float = NaN
     min_value: float = NaN
     max_value: float = NaN
@@ -67,16 +62,13 @@ def _crossing_time(t, v, idx, level, direction):
                 return t[i]
             j = idx[k - 1]
             prev = (v[j] - level) * direction
-            fraction = prev / (prev - d)  # prev < 0 <= d
+            fraction = prev / (prev - d)
             return t[j] + (t[i] - t[j]) * fraction
     return NaN
 
 
 def compute_kpis(times, value, reference, options: KpiOptions | None = None) -> ControlKpis:
-    """times: elapsed s (ascending); value / reference: same length, NaN = missing.
-
-    `reference` may also be a single number (constant setpoint).
-    """
+    """Computes the control KPIs of a value following a reference."""
     options = options or KpiOptions()
     if isinstance(reference, (int, float)):
         reference = [float(reference)] * len(times)
@@ -101,14 +93,14 @@ def compute_kpis(times, value, reference, options: KpiOptions | None = None) -> 
     near_sum = near_sum_sq = 0.0
     near_count = 0
     min_value = max_value = value[idx[0]]
-    last_outside_settle = -1  # position in idx of the last sample outside the settle band
+    last_outside_settle = -1
 
     for k, i in enumerate(idx):
         y = value[i]
         r = reference[i]
         error = r - y
         abs_error = abs(error)
-        direction = 1 if r > y0 else -1  # equal -> cooling, as in the C++ implementation
+        direction = 1 if r > y0 else -1
         sum_abs += abs_error
         sum_sq += error * error
         sum_err += error
@@ -158,14 +150,12 @@ def compute_kpis(times, value, reference, options: KpiOptions | None = None) -> 
         mean = near_sum / near_count
         kpis.near_std = math.sqrt(max(0.0, near_sum_sq / near_count - mean * mean))
 
-    # settling: enter the band and stay in it until the end
     if last_outside_settle < len(idx) - 1:
         settled_at = idx[last_outside_settle + 1]
         kpis.settling_time_s = times[settled_at] - t0
         settled = [reference[i] - value[i] for i in idx[last_outside_settle + 1 :]]
         kpis.steady_state_error = sum(settled) / len(settled)
 
-    # rise / fall time: 10 -> 90 % of the move from the initial value to the final reference
     target = reference[idx[-1]]
     span = target - y0
     kpis.direction = 1 if span > 0.0 else (-1 if span < 0.0 else 0)
@@ -183,7 +173,7 @@ def compute_kpis(times, value, reference, options: KpiOptions | None = None) -> 
 def control_cost(
     kpis: ControlKpis, invalid: bool = False, weights: CostWeights | None = None
 ) -> float:
-    """Weighted cost used to rank controller settings (lower is better)."""
+    """Weighted cost used to rank controller settings."""
     weights = weights or CostWeights()
 
     def or_zero(v):

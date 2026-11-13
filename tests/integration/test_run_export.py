@@ -1,6 +1,4 @@
-"""The analyst's exports (app/services/run_export.py through AnalystTools): chart
-images, data, comparison CSV, experiment reports and bundles, as DeepVac
-Control's Export menu makes them."""
+"""Tests of the run exports."""
 
 import csv
 import json
@@ -123,7 +121,7 @@ def test_reports(analyst):
         "Comparison",
     ):
         assert heading in text, heading
-    assert text.count("data:image/png;base64,") == 3  # comparison, temperature, control
+    assert text.count("data:image/png;base64,") == 3
     assert "Ana" in text and "wait for setpoint" in text
 
 

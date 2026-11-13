@@ -1,10 +1,4 @@
-"""Persisted UI state (theme, window geometry, open tabs, per-run channel
-selections), stored via QSettings (DeepVac/Insight) rather than reset to
-hardcoded defaults every launch.
-
-This state is shared across accounts (not per-user) -- consistent with the
-rest of the app treating runs, annotations, and variable rules as a single
-shared workspace rather than per-user private data."""
+"""Persisted UI state."""
 
 from PySide6.QtCore import QSettings
 
@@ -16,18 +10,12 @@ def _settings():
     return QSettings(ORG, APP)
 
 
-# ── Theme ────────────────────────────────────────────────────────────────
-
-
 def load_theme(default=True):
     return _settings().value("ui/dark", default, type=bool)
 
 
 def save_theme(dark):
     _settings().setValue("ui/dark", bool(dark))
-
-
-# ── Language ─────────────────────────────────────────────────────────────
 
 
 def load_language(default="en"):
@@ -39,10 +27,7 @@ def save_language(code):
     _settings().setValue("ui/language", str(code))
 
 
-# ── Agent API ────────────────────────────────────────────────────────────
-
-
-def load_agent_api_enabled(default=False):
+def load_agent_api_enabled(default=True):
     return _settings().value("agent_api/enabled", default, type=bool)
 
 
@@ -50,17 +35,9 @@ def save_agent_api_enabled(enabled):
     _settings().setValue("agent_api/enabled", bool(enabled))
 
 
-def load_day_recording_enabled(default=True):
-    """Record every chamber's samples all day (app/services/day_recorder.py)."""
-    return _settings().value("day_recording/enabled", default, type=bool)
-
-
-def save_day_recording_enabled(enabled):
-    _settings().setValue("day_recording/enabled", bool(enabled))
-
-
-# the n8n crew's chat webhook (workflow "DeepVac Crew", Chat node)
-DEFAULT_AGENT_CHAT_URL = "http://localhost:5678/webhook/6c1f0e2a-5d3b-4c8e-9f10-deepvaccrew01/chat"
+DEFAULT_AGENT_CHAT_URL = (
+    "http://localhost:5678/webhook/6c1f0e2a-5d3b-4c8e-9f10-deepvacagents01/chat"
+)
 
 
 def load_agent_chat_url(default=DEFAULT_AGENT_CHAT_URL):
@@ -71,18 +48,19 @@ def save_agent_chat_url(url):
     _settings().setValue("agent_api/chat_url", str(url).strip())
 
 
-# ── Analysis Live tab ────────────────────────────────────────────────────
+def load_run_metadata():
+    import json
+
+    try:
+        return json.loads(_settings().value("experiments/metadata", "") or "{}")
+    except ValueError:
+        return {}
 
 
-def load_live_autosave(default=True):
-    return _settings().value("live/autosave", default, type=bool)
+def save_run_metadata(metadata):
+    import json
 
-
-def save_live_autosave(enabled):
-    _settings().setValue("live/autosave", bool(enabled))
-
-
-# ── Window geometry ──────────────────────────────────────────────────────
+    _settings().setValue("experiments/metadata", json.dumps(metadata or {}, ensure_ascii=False))
 
 
 def load_window_geometry():
@@ -100,9 +78,6 @@ def load_window_maximized(default=True):
 
 def save_window_maximized(maximized):
     _settings().setValue("window/maximized", bool(maximized))
-
-
-# ── Open tabs ────────────────────────────────────────────────────────────
 
 
 def load_open_tabs():
@@ -125,9 +100,6 @@ def save_active_tab(key):
     _settings().setValue("tabs/active_key", key or "")
 
 
-# ── Per-run channel (column) selection ───────────────────────────────────
-
-
 def load_channels(run_key):
     value = _settings().value(f"channels/{run_key}", [])
     if isinstance(value, str):
@@ -137,9 +109,6 @@ def load_channels(run_key):
 
 def save_channels(run_key, channels):
     _settings().setValue(f"channels/{run_key}", list(channels))
-
-
-# ── Collaboration ────────────────────────────────────────────────────────
 
 
 def load_collab_host_enabled():

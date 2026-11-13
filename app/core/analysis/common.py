@@ -1,9 +1,4 @@
-"""Helpers shared by the analysis modules.
-
-The analysis package is a port of control2-client's Analysis Core
-(src/core/analysis/*.cpp). Keep the two in step: the stored summaries
-(summary_json, "analysis_version") are compared across both apps.
-"""
+"""Helpers shared by the analysis modules."""
 
 import math
 
@@ -15,7 +10,7 @@ def valid(value) -> bool:
 
 
 def lround(value: float) -> int:
-    """C's lround: halves away from zero (Python's round() rounds halves to even)."""
+    """Rounds halves away from zero."""
     return int(math.copysign(math.floor(abs(value) + 0.5), value))
 
 
@@ -27,7 +22,7 @@ def as_floats(values) -> list[float]:
 
 
 def json_number(value):
-    """NaN / inf -> None, so results serialise as JSON null like the C++ toJson()."""
+    """Returns None for non-finite numbers."""
     if value is None:
         return None
     if isinstance(value, float) and not math.isfinite(value):

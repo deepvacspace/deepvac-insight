@@ -1,4 +1,4 @@
-"""Whole-run and per-stage KPIs (port of core/analysis/runanalysis.cpp)."""
+"""Whole-run and per-stage KPIs."""
 
 from dataclasses import dataclass, field, replace
 
@@ -17,22 +17,20 @@ from app.core.analysis.segmentation import (
 @dataclass
 class StageAnalysis:
     segment: Segment
-    kpis: ControlKpis  # setpoint stages: the whole step response (approach + the hold after it)
+    kpis: ControlKpis
 
 
 @dataclass
 class RunAnalysis:
-    overall: ControlKpis = field(
-        default_factory=ControlKpis
-    )  # whole run against the live reference
-    overshoot: float = NaN  # worst step response (whole run when there is no step)
+    overall: ControlKpis = field(default_factory=ControlKpis)
+    overshoot: float = NaN
     undershoot: float = NaN
-    settling_time_s: float = NaN  # settling of the last step response (from its start)
+    settling_time_s: float = NaN
     cost: float = NaN
     stages: list[StageAnalysis] = field(default_factory=list)
 
     def has_ramp(self) -> bool:
-        """With a ramp the whole-run MAE measures tracking; without one, report the tail MAE."""
+        """Whether the run has a ramp."""
         return any(s.segment.kind == RAMP for s in self.stages)
 
     def to_json(self) -> dict:
@@ -64,7 +62,7 @@ class RunAnalysis:
 
 
 def tracks_setpoint(kind: str) -> bool:
-    """A stage whose MAE measures tracking: a ramp or a hold (a step starts away from its setpoint)."""
+    """Whether a stage's MAE measures tracking."""
     return kind in (RAMP, HOLD)
 
 
@@ -94,7 +92,6 @@ def kpis_to_json(kpis: ControlKpis) -> dict:
 
 
 def _kpis_over(times, value, reference, first: int, last: int, options: KpiOptions) -> ControlKpis:
-    # the stage's own first value and start time
     stage_options = replace(options, tail_end_s=NaN, initial_value=NaN, start_time_s=NaN)
     return compute_kpis(
         times[first : last + 1], value[first : last + 1], reference[first : last + 1], stage_options
@@ -125,7 +122,7 @@ def analyse_run(
             and abs(segments[s + 1].reference_start - segment.reference_end)
             < segmentation_options.reference_tolerance
         ):
-            last = segments[s + 1].last  # step response = approach + hold at the same setpoint
+            last = segments[s + 1].last
         stage = StageAnalysis(
             segment, _kpis_over(times, value, reference, segment.first, last, kpi_options)
         )

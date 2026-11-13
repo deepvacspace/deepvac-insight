@@ -1,12 +1,11 @@
-"""The Export menu of an Analysis run tab (app/run_tab.py): DeepVac Control's
-export options, written through app/services/run_export.py."""
+"""Tests of the run tab Export menu."""
 
 import csv
 import json
 
 import pytest
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QFileDialog, QMessageBox, QPushButton
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from app.run_tab import RunTabPage
 from app.services import data_service
@@ -73,34 +72,56 @@ def page(deepvac_data_dir, qapp, qtbot, qsettings_isolated, tmp_path, monkeypatc
     return widget, saved
 
 
-def _actions(menu):
-    found = {}
-    for action in menu.actions():
-        if action.menu():
-            found.update({f"{action.text()} / {k}": v for k, v in _actions(action.menu()).items()})
-        elif action.text():
-            found[action.text()] = action
-    return found
+def _visible_formats(panel):
+    return [f for f, chip in panel._format_chips.items() if not chip.isHidden()]
 
 
-def test_the_menu_has_deepvac_controls_options(page):
+def _visible_ranges(panel):
+    return [r for r, radio in panel._range_buttons.items() if not radio.isHidden()]
+
+
+def test_the_panel_has_deepvac_controls_options(page):
     widget, _ = page
-    export = next(b for b in widget.findChildren(QPushButton) if b.text() == "Export")
-    assert sorted(_actions(export.menu())) == sorted(
-        [
-            "Chart image / PNG…",
-            "Chart image / BMP…",
-            "Chart image / JPEG…",
-            "Data / Whole experiment (CSV)…",
-            "Data / Whole experiment (TXT)…",
-            "Data / Visible range (CSV)…",
-            "Data / Visible range (TXT)…",
-            "Comparison CSV…",
-            "Experiment report (HTML)…",
-            "Experiment report (PDF)…",
-            "Experiment bundle (JSON)…",
-        ]
+    widget._open_export()
+    assert widget.side_bar.current() == "export"
+    panel = widget.export_panel
+    assert _visible_formats(panel) == ["png", "bmp", "jpeg", "csv", "txt", "html", "pdf", "json"]
+    assert _visible_ranges(panel) == ["view", "experiment"]
+    widget.set_compare_run("upload/b", True)
+    widget._open_export()
+    assert "comparison-csv" in _visible_formats(panel)
+    panel.select_format("json")
+    assert not panel._range_buttons["view"].isEnabled()
+
+
+def test_the_panel_exports_the_view_the_run_and_a_recorded_range(page):
+    from app.services import day_recorder
+
+    widget, saved = page
+    panel = widget.export_panel
+    widget._on_export_requested("csv", "experiment")
+    with open(saved[-1], encoding="utf-8-sig", newline="") as f:
+        assert len(list(csv.reader(f))) == 301
+    widget._on_export_requested("png", "experiment")
+    assert saved[-1].name == "out_step_to_40-run.png" and not QImage(str(saved[-1])).isNull()
+
+    start = 1_780_000_000
+    times = [start + 2.0 * i for i in range(300)]
+    day_recorder.write_day(
+        day_recorder.day_path("PLC", day_recorder.day_of(start)),
+        times,
+        {"temp": [20.0 + i / 100 for i in range(300)], "temp_ref": [40.0] * 300},
+        "PLC",
     )
+    widget._open_export()
+    assert _visible_ranges(panel) == ["view", "experiment", "day", "custom"]
+    panel.select_range("custom")
+    panel.set_custom_range(start + 100, start + 199)
+    widget._on_export_requested("txt", "custom")
+    lines = saved[-1].read_text(encoding="utf-8-sig").splitlines()
+    assert saved[-1].suffix == ".txt" and len(lines) == 1 + 50
+    widget._on_export_requested("html", "day")
+    assert "PLC" in saved[-1].read_text(encoding="utf-8")
 
 
 def test_exports_write_the_files(page):

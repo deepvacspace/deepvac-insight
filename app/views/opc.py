@@ -1,14 +1,4 @@
-"""OpcMixin — builds the OPC UA server setup page.
-
-Backed by a real asyncua OPC UA server (app/services/opc_broadcast_server.py)
-that any standard OPC UA client can browse and subscribe to. It can only be
-started once at least one chamber connection (Live Monitoring) is
-established, since it broadcasts the samples those connections receive --
-one server, but every currently-connected chamber gets its own node under
-Objects/ChamberVariables/<chamber name>. It keeps running as more chambers
-connect or disconnect, and only stops automatically once the last one
-disconnects.
-"""
+"""OPC UA server setup page."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -164,8 +154,6 @@ class OpcMixin:
 
         return container
 
-    # ── Server control ───────────────────────────────────────────────────────
-
     def _on_opc_toggle(self):
         if self.opc_server.is_running():
             self.opc_server.stop()
@@ -181,10 +169,7 @@ class OpcMixin:
         self.opc_server.set_update_rate(_OPC_RATE_MS.get(text, 500))
 
     def _opc_set_chamber_connected(self, any_connected):
-        """Called from main_window._recompute_chamber_aggregate_status()
-        with whether *any* chamber session is currently connected -- the
-        server only auto-stops once the last one drops, not on every
-        individual chamber's disconnect."""
+        """Updates the OPC server with whether any chamber is connected."""
         if not any_connected and self.opc_server.is_running():
             self.opc_server.stop()
         self._opc_start_btn.setEnabled(any_connected)
@@ -213,9 +198,6 @@ class OpcMixin:
             from PySide6.QtCore import QCoreApplication
 
             port = self._opc_port.value()
-            # self.tr()'s %n/plural overload doesn't reliably resolve context
-            # in this PySide6 version -- call QCoreApplication.translate()
-            # directly with the exact context pyside6-lupdate recorded.
             text = QCoreApplication.translate(
                 "OpcMixin", "Broadcasting on port {0} — %n client(s)", "", count
             )

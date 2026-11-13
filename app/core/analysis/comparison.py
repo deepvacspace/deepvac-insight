@@ -1,4 +1,4 @@
-"""Comparing runs (port of core/analysis/comparison.cpp)."""
+"""Comparison of runs."""
 
 import math
 from dataclasses import dataclass, field
@@ -9,13 +9,10 @@ from app.core.analysis.experimentanalysis import ExperimentAnalysis, RunConfig
 from app.core.analysis.segmentation import RAMP, SETPOINT
 from app.core.analysis.steadystate import steady_fraction
 
-# what the runs of a comparison are lined up on
-ALIGN_START = "start"  # run start
-ALIGN_SETPOINT_CHANGE = "setpoint_change"  # n-th change of the reference (step or ramp start)
-ALIGN_TARGET_CROSSING = (
-    "target_crossing"  # first time the value reaches the reference after the n-th change
-)
-ALIGN_STAGE = "stage"  # start of stage n
+ALIGN_START = "start"
+ALIGN_SETPOINT_CHANGE = "setpoint_change"
+ALIGN_TARGET_CROSSING = "target_crossing"
+ALIGN_STAGE = "stage"
 
 LOWER = "lower"
 HIGHER = "higher"
@@ -24,17 +21,17 @@ NONE = "none"
 
 @dataclass
 class KpiComparisonRow:
-    key: str  # stable id
-    label: str  # English
-    unit: str  # "", "s", "%", "°C"
+    key: str
+    label: str
+    unit: str
     better: str = LOWER
-    values: list[float] = field(default_factory=list)  # one per run, NaN when not available
+    values: list[float] = field(default_factory=list)
 
 
 @dataclass
 class ConfigComparisonRow:
     label: str
-    values: list[str] = field(default_factory=list)  # one per run
+    values: list[str] = field(default_factory=list)
     differs: bool = False
 
 
@@ -42,10 +39,10 @@ class ConfigComparisonRow:
 class SignalComparison:
     samples: int = 0
     overlap_s: float = NaN
-    mean_diff: float = NaN  # mean(B - A)
+    mean_diff: float = NaN
     rms_diff: float = NaN
     max_abs_diff: float = NaN
-    correlation: float = NaN  # Pearson
+    correlation: float = NaN
 
 
 def _setpoint_changes(analysis: ExperimentAnalysis, tolerance: float) -> list[int]:
@@ -70,7 +67,7 @@ def _text(value: float, precision: int = 4) -> str:
 def alignment_anchor(
     analysis: ExperimentAnalysis, times, value, reference, mode: str, n: int
 ) -> float:
-    """Elapsed time of the anchor in one run (n is 1-based); NaN when the run has no such anchor."""
+    """Returns the elapsed time of an alignment anchor."""
     if not times:
         return NaN
     stages = analysis.run.stages
@@ -85,7 +82,6 @@ def alignment_anchor(
         stage = stages[changes[n - 1]].segment
         if mode == ALIGN_SETPOINT_CHANGE:
             return stage.start
-        # first sample from the change on where the error changes sign or reaches zero
         count = min(len(times), len(value), len(reference))
         side = 0
         for i in range(stage.first, count):
@@ -128,7 +124,6 @@ KPI_SPECS = [
     ("tail_std", "Tail std", "°C", LOWER, lambda a: a.run.overall.tail_std),
     ("cost", "Control cost", "", LOWER, lambda a: a.run.cost),
     ("steady_fraction", "Time steady", "%", HIGHER, _steady_percent),
-    # full heating / cooling is normal, neither better nor worse
     ("saturation", "Output saturated", "%", NONE, lambda a: 100.0 * a.saturation.fraction),
     ("windup", "Integrator windup", "s", LOWER, lambda a: a.saturation.windup_s),
     ("share_p", "P share", "%", NONE, lambda a: 100.0 * a.pid.share_p),
@@ -139,7 +134,7 @@ KPI_SPECS = [
 
 
 def compare_kpis(runs: list[ExperimentAnalysis | None]) -> list[KpiComparisonRow]:
-    """The headline KPIs of every run side by side (first run = reference)."""
+    """Compares the headline KPIs of runs."""
     rows = []
     for key, label, unit, better, get in KPI_SPECS:
         rows.append(
@@ -179,7 +174,7 @@ def compare_configs(configs: list[RunConfig | None]) -> list[ConfigComparisonRow
 
 
 def match_steps(runs: list[ExperimentAnalysis | None]) -> list[list[int]]:
-    """Step responses of every run paired up: k-th step of each run (stage index, -1 when missing)."""
+    """Pairs the step responses of runs."""
     steps = [
         [k for k, s in enumerate(run.run.stages) if s.segment.kind == SETPOINT] if run else []
         for run in runs
@@ -191,7 +186,7 @@ def match_steps(runs: list[ExperimentAnalysis | None]) -> list[list[int]]:
 def compare_signals(
     times_a, values_a, offset_a: float, times_b, values_b, offset_b: float
 ) -> SignalComparison:
-    """Signal B against A after shifting both by their alignment offsets (B interpolated at A's samples)."""
+    """Compares two aligned signals."""
     result = SignalComparison()
     n_a = min(len(times_a), len(values_a))
     n_b = min(len(times_b), len(values_b))
@@ -201,7 +196,7 @@ def compare_signals(
     first = last = NaN
     j = 0
     for i in range(n_a):
-        t = times_a[i] - offset_a + offset_b  # A's sample on B's time axis
+        t = times_a[i] - offset_a + offset_b
         if not valid(values_a[i]) or t < times_b[0] or t > times_b[n_b - 1]:
             continue
         while j + 1 < n_b and times_b[j + 1] < t:

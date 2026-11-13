@@ -1,4 +1,4 @@
-"""Anomaly detection (port of core/analysis/anomalies.cpp)."""
+"""Anomaly detection."""
 
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
@@ -9,16 +9,14 @@ from app.core.analysis.runanalysis import RunAnalysis
 from app.core.analysis.segmentation import SETPOINT
 from app.core.analysis.seriesstats import percentile
 
-# kinds
-LIMIT = "limit"  # a channel outside a variable rule's band
-SPIKE = "spike"  # isolated jump that reverts
-FLATLINE = "flatline"  # a measured channel stuck at one value
-GAP = "gap"  # missing data
-OSCILLATION = "oscillation"  # the value keeps crossing the reference
-NOT_REACHED = "not_reached"  # a setpoint the value never settled at
-SATURATION = "saturation"  # controller output at its limit for a long time (information)
+LIMIT = "limit"
+SPIKE = "spike"
+FLATLINE = "flatline"
+GAP = "gap"
+OSCILLATION = "oscillation"
+NOT_REACHED = "not_reached"
+SATURATION = "saturation"
 
-# severities, in increasing order
 INFO = "info"
 WARNING = "warning"
 CRITICAL = "critical"
@@ -30,10 +28,10 @@ class Anomaly:
     kind: str = LIMIT
     severity: str = WARNING
     channel: str = ""
-    start: float = 0.0  # elapsed s
+    start: float = 0.0
     end: float = 0.0
-    value: float = NaN  # worst value / excursion / statistic, depends on the kind
-    detail: str = ""  # human readable (English)
+    value: float = NaN
+    detail: str = ""
 
     def to_json(self) -> dict:
         return {
@@ -49,7 +47,7 @@ class Anomaly:
 
 @dataclass
 class LimitRule:
-    """Variable rule: acceptable band, NaN = unbounded side."""
+    """Acceptable band of a variable."""
 
     channel: str
     lo: float = NaN
@@ -59,26 +57,22 @@ class LimitRule:
 
 @dataclass
 class AnomalyOptions:
-    spike_z: float = 8.0  # robust z-score (median / MAD) of the sample-to-sample change
-    spike_revert_samples: int = 3  # ... that is undone within this many samples
-    spike_min_jump: float = 0.0  # ... and at least this big (channel units)
-    spike_min_jump_of_span: float = 0.02  # ... and at least this part of the channel's 1-99 % span
-    flatline_s: float = 900.0  # a measured channel that doesn't change at all for this long
-    gap_factor: float = 5.0  # time step > factor x the typical sample period ...
-    min_gap_s: float = 10.0  # ... and at least this long
+    spike_z: float = 8.0
+    spike_revert_samples: int = 3
+    spike_min_jump: float = 0.0
+    spike_min_jump_of_span: float = 0.02
+    flatline_s: float = 900.0
+    gap_factor: float = 5.0
+    min_gap_s: float = 10.0
     oscillation_window_s: float = 600.0
-    oscillation_crossings: int = 6  # reference crossings within the window
-    crossing_deadband: float = 0.2  # |error| below this doesn't count as a side
-    near_band: float = 2.0  # a step response that never gets this close is critical
-    saturation_s: float = 300.0  # continuous output saturation longer than this
+    oscillation_crossings: int = 6
+    crossing_deadband: float = 0.2
+    near_band: float = 2.0
+    saturation_s: float = 300.0
 
 
 def number(value: float, precision: int = 3) -> str:
-    """QString::number(value, 'g', precision).
-
-    Qt rounds exact ties half away from zero (439.25 -> "439.3"); Python's
-    format rounds them to even, so round the exact binary value first.
-    """
+    """Formats a number like QString::number."""
     if not valid(value) or value == 0.0:
         return f"{value:.{precision}g}"
     exact = Decimal(value)
@@ -150,11 +144,9 @@ def detect_spikes(
     deviations = [abs(d - median) for d in finite_deltas]
     scale = 1.4826 * percentile(deviations, 0.5)
     if not scale > 0.0:
-        # quantised / very quiet signal: fall back to the mean absolute deviation
         scale = 1.2533 * sum(deviations) / len(deviations)
     if not scale > 0.0:
         return []
-    # a spike must also be a sizeable jump for the channel (very quiet signals have a tiny scale)
     levels = [v for v in values[:n] if valid(v)]
     min_jump = max(
         options.spike_min_jump,
@@ -170,7 +162,6 @@ def detect_spikes(
         if abs(z) < options.spike_z or abs(deltas[i]) < min_jump:
             i += 1
             continue
-        # a spike comes back: a later change of the opposite sign undoes most of it
         revert = -1
         j = i + 1
         while j < n and j <= i + options.spike_revert_samples:
@@ -183,7 +174,7 @@ def detect_spikes(
                 break
             j += 1
         if revert < 0:
-            i += 1  # a step, not a spike
+            i += 1
             continue
         if found and times[i] - found[-1].end <= 0.0:
             i += 1
@@ -268,7 +259,7 @@ def detect_oscillation(
 ) -> list[Anomaly]:
     options = options or AnomalyOptions()
     n = min(len(times), len(value), len(reference))
-    crossings = []  # times the error changed side
+    crossings = []
     side = 0
     for i in range(n):
         error = reference[i] - value[i]
@@ -301,7 +292,7 @@ def detect_oscillation(
 def detect_unreached_setpoints(
     analysis: RunAnalysis, options: AnomalyOptions | None = None
 ) -> list[Anomaly]:
-    """Step responses that never settled (from analyse_run's stages)."""
+    """Detects step responses that never settled."""
     found = []
     for stage in analysis.stages:
         if stage.segment.kind != SETPOINT or valid(stage.kpis.settling_time_s):
@@ -335,7 +326,6 @@ def detect_long_saturation(
         duration = episode.end - episode.start
         if duration < options.saturation_s:
             continue
-        # full heating or cooling is normal (a big step, a fast ramp): noted, not a warning
         side = "upper" if episode.high else "lower"
         found.append(
             Anomaly(

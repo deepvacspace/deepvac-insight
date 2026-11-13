@@ -1,4 +1,4 @@
-"""Controller output saturation and PID term shares (port of core/analysis/controlanalysis.cpp)."""
+"""Controller output saturation and PID term shares."""
 
 from dataclasses import dataclass
 
@@ -8,21 +8,21 @@ from app.core.analysis.seriesstats import percentile
 
 @dataclass
 class SaturationOptions:
-    u_min: float = -100.0  # control output limits (temp_u, %)
+    u_min: float = -100.0
     u_max: float = 100.0
-    tolerance: float = 0.5  # within this of a limit counts as saturated
+    tolerance: float = 0.5
 
 
 @dataclass
 class SaturationStats:
-    samples: int = 0  # valid output samples
-    fraction: float = NaN  # share of time at either limit, 0 ... 1
+    samples: int = 0
+    fraction: float = NaN
     fraction_high: float = NaN
     fraction_low: float = NaN
-    total_s: float = 0.0  # time at a limit
-    longest_s: float = NaN  # longest continuous episode
+    total_s: float = 0.0
+    longest_s: float = NaN
     episodes: int = 0
-    windup_s: float = NaN  # saturated while the integral term keeps pushing further
+    windup_s: float = NaN
     u_mean: float = NaN
     u_min: float = NaN
     u_max: float = NaN
@@ -38,13 +38,13 @@ class SaturationEpisode:
 @dataclass
 class PidContribution:
     samples: int = 0
-    mean_p: float = NaN  # signed means
+    mean_p: float = NaN
     mean_i: float = NaN
     mean_d: float = NaN
     mean_abs_p: float = NaN
     mean_abs_i: float = NaN
     mean_abs_d: float = NaN
-    share_p: float = NaN  # mean |term| / sum of mean |terms|, 0 ... 1
+    share_p: float = NaN
     share_i: float = NaN
     share_d: float = NaN
 
@@ -58,7 +58,7 @@ class PidContribution:
 
 
 def _sample_durations(times, first: int, last: int) -> list[float]:
-    """Time a sample stands for: up to the next sample, gaps capped at a few typical periods."""
+    """Returns the time each sample stands for."""
     steps = [times[k + 1] - times[k] for k in range(first, last)]
     typical = max(percentile(steps, 0.5), 1e-9) if steps else 1.0
     durations = [typical] * (last - first + 1)
@@ -76,7 +76,7 @@ def analyse_saturation(
     options: SaturationOptions | None = None,
     episodes: list | None = None,
 ) -> SaturationStats:
-    """[first, last] sample range (inclusive, clamped); integral (temp_u_i) may be empty."""
+    """Analyses controller output saturation."""
     options = options or SaturationOptions()
     stats = SaturationStats()
     first = max(first, 0)
@@ -88,7 +88,7 @@ def analyse_saturation(
     total = high = low = windup = total_u = 0.0
     longest = 0.0
     episode_start = NaN
-    episode_side = 0  # +1 high, -1 low, 0 none
+    episode_side = 0
 
     def close_episode(end: float) -> None:
         nonlocal longest, episode_side

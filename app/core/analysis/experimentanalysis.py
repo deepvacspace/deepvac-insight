@@ -1,8 +1,4 @@
-"""Everything known about one recorded experiment (port of core/analysis/experimentanalysis.cpp).
-
-`ExperimentAnalysis.to_json()` is what both apps store in the run database's
-summary_json, tagged with ANALYSIS_VERSION.
-"""
+"""Analysis of one recorded experiment."""
 
 from dataclasses import dataclass, field
 
@@ -28,20 +24,16 @@ from app.core.analysis.steadystate import (
     steady_fraction,
 )
 
-# Bump when to_json() gains content: stored analyses older than this are recomputed.
-# Same number as EXPERIMENT_ANALYSIS_VERSION in control2-client.
 ANALYSIS_VERSION = 2
 
 
 @dataclass
 class ExperimentInput:
-    """One recorded experiment, channels by state name (temp, temp_ref, temp_u,
-    temp_u_p/i/d, temp_kp/ki/kd, interval, cycle_cur, ...). Missing channels
-    just skip the analyses needing them."""
+    """One recorded experiment, channels by state name."""
 
-    times: list[float]  # elapsed s, ascending
+    times: list[float]
     channels: dict[str, list[float]]
-    rules: list[LimitRule] = field(default_factory=list)  # variable rules of the run
+    rules: list[LimitRule] = field(default_factory=list)
 
 
 @dataclass
@@ -55,14 +47,14 @@ class ExperimentOptions:
 
 @dataclass
 class StageDetail:
-    time_to_steady_s: float = NaN  # from the stage start until a steady state begins
-    steady_fraction: float = NaN  # share of the stage spent steady
-    reference_rate_per_min: float = NaN  # least-squares trend of the reference (ramps)
+    time_to_steady_s: float = NaN
+    steady_fraction: float = NaN
+    reference_rate_per_min: float = NaN
     value_rate_per_min: float = NaN
-    tracking_lag_s: float = NaN  # ramps: mean error / reference rate
+    tracking_lag_s: float = NaN
     saturation: SaturationStats = field(default_factory=SaturationStats)
     pid: PidContribution = field(default_factory=PidContribution)
-    kp: float = NaN  # gains in use (median over the stage)
+    kp: float = NaN
     ki: float = NaN
     kd: float = NaN
 
@@ -74,32 +66,32 @@ class RunConfig:
     samples: int = 0
     duration_s: float = NaN
     sample_period_s: float = NaN
-    kp: float = NaN  # most used gains
+    kp: float = NaN
     ki: float = NaN
     kd: float = NaN
-    gain_sets: int = 0  # distinct (kp, ki, kd) combinations used
-    setpoints: list[float] = field(default_factory=list)  # levels the reference held, in order
+    gain_sets: int = 0
+    setpoints: list[float] = field(default_factory=list)
     min_reference: float = NaN
     max_reference: float = NaN
     max_ramp_rate_per_min: float = NaN
     stages: int = 0
-    steps: int = 0  # setpoint stages
+    steps: int = 0
     ramps: int = 0
     holds: int = 0
-    program_intervals: int = 0  # highest interval number
-    cycles: int = 0  # highest cycle number
+    program_intervals: int = 0
+    cycles: int = 0
     channels: list[str] = field(default_factory=list)
 
 
 @dataclass
 class ExperimentAnalysis:
-    has_control: bool = False  # temp and temp_ref present with samples
+    has_control: bool = False
     run: RunAnalysis = field(default_factory=RunAnalysis)
-    stage_details: list[StageDetail] = field(default_factory=list)  # parallel to run.stages
+    stage_details: list[StageDetail] = field(default_factory=list)
     steady: list[SteadyInterval] = field(default_factory=list)
     saturation: SaturationStats = field(default_factory=SaturationStats)
     pid: PidContribution = field(default_factory=PidContribution)
-    anomalies: list[Anomaly] = field(default_factory=list)  # sorted by start
+    anomalies: list[Anomaly] = field(default_factory=list)
     config: RunConfig = field(default_factory=RunConfig)
 
     def anomaly_count(self, at_least: str) -> int:
@@ -199,7 +191,7 @@ def _highest(values) -> float:
 
 
 def is_measured(name: str) -> bool:
-    """Channels whose values are measurements (spikes / flatlines make sense there)."""
+    """Whether a channel holds measurements."""
     return name in ("temp", "temp_raw") or name.startswith("pres_")
 
 
@@ -223,7 +215,6 @@ def analyse_experiment(
     interval = channel("interval")
     cycle = channel("cycle_cur")
 
-    # ---- control KPIs, stages, steady state
     if value and reference:
         result.run = analyse_run(
             times, value, reference, interval, cycle, options.kpi, options.segmentation
@@ -232,7 +223,6 @@ def analyse_experiment(
     if value:
         result.steady = detect_steady_states(times, value, reference, options.steady)
 
-    # ---- whole-run control behaviour
     episodes = []
     if n > 0:
         if u:
@@ -242,7 +232,6 @@ def analyse_experiment(
         if u_p and u_i and u_d:
             result.pid = analyse_pid_contribution(u_p, u_i, u_d, 0, n - 1)
 
-    # ---- per stage
     for stage in result.run.stages:
         s = stage.segment
         detail = StageDetail()
@@ -267,14 +256,13 @@ def analyse_experiment(
         detail.kd = _median(kd, s.first, s.last) if kd else NaN
         result.stage_details.append(detail)
 
-    # ---- configuration
     config = result.config
     config.samples = n
     if n > 1:
         config.duration_s = times[-1] - times[0]
         config.sample_period_s = percentile([times[i] - times[i - 1] for i in range(1, n)], 0.5)
     channels = set(data.channels)
-    for alias in ("kp", "ki", "kd"):  # Insight-compatible copies of temp_kp / temp_ki / temp_kd
+    for alias in ("kp", "ki", "kd"):
         if "temp_" + alias in channels:
             channels.discard(alias)
     config.channels = sorted(channels)
@@ -286,7 +274,7 @@ def analyse_experiment(
                 used[key] = used.get(key, 0) + 1
         config.gain_sets = len(used)
         best = 0
-        for key in sorted(used):  # QMap order: ties go to the smallest gains
+        for key in sorted(used):
             if used[key] > best:
                 best = used[key]
                 config.kp, config.ki, config.kd = key
@@ -310,7 +298,6 @@ def analyse_experiment(
                 )
         elif s.kind == HOLD:
             config.holds += 1
-        # a level the reference sat at (a setpoint followed by its hold counts once)
         if (
             s.kind != RAMP
             and valid(s.reference_end)
@@ -326,7 +313,6 @@ def analyse_experiment(
     )
     config.cycles = max(0, int(_highest(cycle))) if cycle and valid(_highest(cycle)) else 0
 
-    # ---- anomalies
     found: list[Anomaly] = []
     for rule in data.rules:
         values = data.channels.get(rule.channel, [])
@@ -341,6 +327,6 @@ def analyse_experiment(
         found += anomaly_mod.detect_oscillation(times, value, reference, options.anomaly)
         found += anomaly_mod.detect_unreached_setpoints(result.run, options.anomaly)
     found += anomaly_mod.detect_long_saturation(episodes, options.anomaly)
-    found.sort(key=lambda a: a.start)  # stable, like std::stable_sort
+    found.sort(key=lambda a: a.start)
     result.anomalies = found
     return result

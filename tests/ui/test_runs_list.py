@@ -1,5 +1,4 @@
-"""Runs page: each run shows its duration and sample count and has a report
-download button; Reports, Monitor and OPC Server are hidden from the sidebar."""
+"""Tests of the run list."""
 
 import json
 
@@ -49,19 +48,21 @@ def window(deepvac_ui, fake_user, qtbot):
     win = DeepVacDesktop(current_user=fake_user)
     qtbot.addWidget(win)
     win.restore_window_state()
-    win._nav_to(1)
+    win._open_runs_drawer()
     return win
 
 
 def test_only_the_main_pages_are_in_the_sidebar(window):
+    assert not hasattr(window, "act_runs_btn")
     assert not window.act_reports_btn.isVisible()
-    assert not hasattr(window, "act_monitor_btn")  # Live Monitoring is gone
+    assert not hasattr(window, "act_monitor_btn")
+    assert not hasattr(window, "act_sim_btn")
     assert not window.act_opc_btn.isVisible()
+    assert not window.act_campaigns_btn.isVisible()
     for btn in (
-        window.act_dashboard_btn,
-        window.act_runs_btn,
         window.act_analysis_btn,
-        window.act_sim_btn,
+        window.act_controller_btn,
+        window.act_ai_agents_btn,
     ):
         assert btn.isVisible()
 
@@ -95,9 +96,7 @@ def test_download_button_writes_the_report(window, tmp_path, monkeypatch):
     index = view.model().index(row, 0)
     for kind in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
         event = QMouseEvent(kind, point, point, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-        assert window._run_list_delegate.editorEvent(
-            event, view.model(), option, index
-        )  # the button takes the click
+        assert window._run_list_delegate.editorEvent(event, view.model(), option, index)
     assert target.exists()
     sheet = openpyxl.load_workbook(target).active
-    assert sheet.max_row == 602  # header + every sample
+    assert sheet.max_row == 602

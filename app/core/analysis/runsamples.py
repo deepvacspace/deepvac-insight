@@ -1,15 +1,10 @@
-"""Stored run samples (samples_json rows) -> analysis input.
-
-Mirrors control2-client's RunStore::loadSamples() + analyse(), so the same run
-gives the same summary in both apps.
-"""
+"""Conversion of stored run samples to analysis input."""
 
 import json
 
 from app.core.analysis.common import NaN
 from app.core.analysis.experimentanalysis import ExperimentInput
 
-# never treated as channels (Insight's numeric_columns() skips them too)
 NON_CHANNEL_COLUMNS = {"run_id", "timestamp", "start_temp"}
 
 
@@ -18,11 +13,7 @@ def _is_number(value) -> bool:
 
 
 def columns_from_rows(rows: list[dict]) -> tuple[list[float], dict[str, list[float]]]:
-    """Epoch times and channels (by name) of sample rows.
-
-    Rows without a numeric timestamp are skipped: without a time the sample
-    cannot be placed. Columns are every key holding numbers or nulls.
-    """
+    """Returns the times and channels of sample rows."""
     times: list[float] = []
     channels: dict[str, list[float]] = {}
     for row in rows:
@@ -47,7 +38,7 @@ def columns_from_rows(rows: list[dict]) -> tuple[list[float], dict[str, list[flo
 
 
 def experiment_input(rows: list[dict], rules=()) -> ExperimentInput:
-    """Analysis input of stored sample rows: elapsed times from the first sample."""
+    """Builds the analysis input of sample rows."""
     times, channels = columns_from_rows(rows)
     start = times[0] if times else 0.0
     return ExperimentInput(times=[t - start for t in times], channels=channels, rules=list(rules))
