@@ -1,14 +1,4 @@
-"""The experiments database of the Brain: the run history as plain SQL tables an agent can query.
-
-data/deepvac_brain.sqlite3 is rebuilt from the run database (every run analysed with
-app.core.analysis, numbered #N like the analyst tools), the test profiles, the full-day
-recordings and DeepVac Control's event log (copied into data/deepvac_control_log.sqlite3 by
-scripts/import_control_data.py). Nothing in it is edited by hand: scripts/build_brain.py
-rebuilds it, with the wiki's generated pages.
-
-Agents query it read-only (query()): one SELECT / WITH statement, the database opened read-only,
-an authorizer that refuses anything but reading, at most MAX_ROWS rows and a time limit.
-"""
+"""The Brain's experiments database."""
 
 import json
 import math
@@ -22,10 +12,9 @@ from pathlib import Path
 import app.common as common
 
 MAX_ROWS = 200
-MAX_CELL = 300  # characters of a text cell
+MAX_CELL = 300
 TIME_LIMIT_S = 5.0
 
-# table -> (what it holds, {column: meaning}); the source of the schema agents read
 SCHEMA = {
     "experiments": (
         "One row per recorded experiment (run), numbered like the analyst tools (#N = number, oldest first).",
@@ -34,7 +23,7 @@ SCHEMA = {
             "key": "run database key",
             "name": "title",
             "group_name": "folder / series it belongs to (e.g. 0degrees, neg70degrees, cooldown_run_history)",
-            "source": "import (DeepVac Control), folder (logger files), monitoring (recorded by Insight)",
+            "source": "import (Deepvac Control), folder (logger files), monitoring (recorded by Insight)",
             "chamber": "chamber name, when recorded",
             "test_profile": "test profile it ran, when recorded",
             "start_time": "local start, YYYY-MM-DD HH:MM:SS",
@@ -123,11 +112,11 @@ SCHEMA = {
     ),
     "events": (
         "What happened when: events recorded with experiments (job start/end, setpoint and PID changes, alarms) "
-        "and DeepVac Control's event log (application, operator and PLC messages).",
+        "and Deepvac Control's event log (application, operator and PLC messages).",
         {
             "time": "local time, YYYY-MM-DD HH:MM:SS",
             "epoch": "Unix seconds",
-            "source": "'experiment' (recorded with a run) or 'control log' (DeepVac Control's log)",
+            "source": "'experiment' (recorded with a run) or 'control log' (Deepvac Control's log)",
             "experiment": "experiments.number for events of a run, else NULL",
             "type": "event type (job_start, setpoint_change, alarm_raised, ... ; control log: app, plc, error)",
             "message": "text",
@@ -163,11 +152,8 @@ def control_log_path() -> Path:
     return common.DATA_DIR / "deepvac_control_log.sqlite3"
 
 
-# ---------------------------------------------------------------- DeepVac Control's event log (actions.dat)
-
-
 def read_actions_dat(path: Path) -> list[dict]:
-    """DeepVac Control's data/event/actions.dat: a QDataStream QVariantList of {date, msg, type} maps."""
+    """Reads Deepvac Control's event log file."""
     raw = path.read_bytes()
     pos = 0
 
@@ -188,7 +174,7 @@ def read_actions_dat(path: Path) -> list[dict]:
 
     def variant():
         kind = take(">I")
-        take(">B")  # null flag
+        take(">B")
         if kind == 1:
             return bool(take(">B"))
         if kind in (2, 3):
@@ -203,13 +189,11 @@ def read_actions_dat(path: Path) -> list[dict]:
             return {qstring(): variant() for _ in range(take(">I"))}
         if kind == 9:
             return [variant() for _ in range(take(">I"))]
-        if (
-            kind == 16
-        ):  # QDateTime: julian day, msecs of the day, time spec (0 local, 1 UTC, 2 offset)
+        if kind == 16:
             day, msecs, spec = take(">q"), take(">I"), take(">B")
             offset = take(">i") if spec == 2 else 0
             stamp = (day - 2440588) * 86400 + msecs / 1000.0 - offset
-            if spec == 0:  # a local wall time: as a naive local datetime
+            if spec == 0:
                 stamp = (datetime(1970, 1, 1) + timedelta(seconds=stamp)).timestamp()
             return stamp
         raise ValueError(f"QVariant type {kind} at byte {pos}")
@@ -227,11 +211,11 @@ def read_actions_dat(path: Path) -> list[dict]:
     return events
 
 
-CONTROL_LOG_TYPES = {0: "app", 1: "plc", 2: "error"}  # ActionManager::ActionType
+CONTROL_LOG_TYPES = {0: "app", 1: "plc", 2: "error"}
 
 
 def import_control_log(actions_dat: Path) -> int:
-    """Copies DeepVac Control's event log into data/deepvac_control_log.sqlite3; returns the new entries."""
+    """Imports Deepvac Control's event log."""
     events = read_actions_dat(actions_dat)
     conn = sqlite3.connect(control_log_path())
     try:
@@ -253,9 +237,6 @@ def import_control_log(actions_dat: Path) -> int:
         conn.close()
 
 
-# ---------------------------------------------------------------- building
-
-
 def _num(value):
     if value is None or isinstance(value, str):
         return value
@@ -272,7 +253,7 @@ def _local(epoch):
 
 
 def build(progress=None) -> dict:
-    """Rebuilds data/deepvac_brain.sqlite3; returns row counts. progress(done, total)."""
+    """Rebuilds the experiments database."""
     from app.api.runs import RunCatalogue
     from app.core.analysis import anomalies as anomaly_mod
     from app.core.analysis.kpis import control_cost
@@ -500,9 +481,6 @@ def _insert(conn, table, row):
     )
 
 
-# ---------------------------------------------------------------- reading
-
-
 class QueryError(ValueError):
     pass
 
@@ -535,7 +513,7 @@ def _read_only():
 
 
 def query(sql: str, max_rows: int = MAX_ROWS) -> dict:
-    """One read-only SELECT (or WITH ... SELECT); at most max_rows rows."""
+    """Runs one read-only query on the experiments database."""
     text = sql.strip().rstrip(";").strip()
     if not text.lower().startswith(("select", "with")):
         raise QueryError("Only SELECT (or WITH ... SELECT) statements.")

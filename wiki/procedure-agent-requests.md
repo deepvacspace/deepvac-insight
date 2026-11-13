@@ -7,7 +7,7 @@ updated: 2026-10-24
 ---
 # Approve or reject an agent's request
 
-How chamber actions asked for by the AI crew reach the chamber. Nothing the agents ask for is
+How chamber actions asked for by the AI agents reach the chamber. Nothing the agents ask for is
 sent until a person approves it ([[limits-and-safety]]).
 
 ## The steps
@@ -22,7 +22,7 @@ sent until a person approves it ([[limits-and-safety]]).
    ends (finished, stopped, alarm or replaced).
 5. Undecided requests expire after 30 minutes.
 
-## What the crew sees
+## What the agent sees
 
 The worker waits up to 2 minutes for your decision. If you decide later, or when the job ends,
 Insight posts an update into the same chat and the Professor tells the user what came of it.

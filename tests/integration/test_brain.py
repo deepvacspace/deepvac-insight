@@ -1,5 +1,4 @@
-"""The crew's Brain: the wiki (app/services/wiki_service.py), the experiments database
-(app/services/brain_db.py), the generated pages and the Brain's MCP tools."""
+"""Tests of the Brain: wiki, experiments database and tools."""
 
 import asyncio
 import json
@@ -80,7 +79,6 @@ def test_proposals_wait_for_a_person(wiki, deepvac_data_dir):
     assert "[[r23-start-delay]]" in (wiki / "index.md").read_text(encoding="utf-8")
     assert "created [[r23-start-delay]]" in (wiki / "log.md").read_text(encoding="utf-8")
 
-    # an update proposed against a version that changed meanwhile is refused
     update = wiki_service.propose(
         "r23-start-delay", LESSON.replace("first minutes", "first 90 s"), "measured", "x"
     )
@@ -122,7 +120,7 @@ def _insert_run(key, name, start, setpoint):
 
 
 def _actions_dat(path: Path, entries):
-    """DeepVac Control's event log format: a QDataStream QVariantList of {date, msg, type} maps."""
+    """Builds a Deepvac Control event log file."""
 
     def qstring(text):
         data = text.encode("utf-16-be")
@@ -146,7 +144,7 @@ def test_the_experiments_database(deepvac_data_dir, wiki, tmp_path):
         [(1_780_000_100, 0, "Application started. User 'Ana'"), (1_780_000_200, 1, "PLC alarm 9")],
     )
     assert brain_db.import_control_log(log) == 2
-    assert brain_db.import_control_log(log) == 0  # already there
+    assert brain_db.import_control_log(log) == 0
     counts = brain_db.build()
     assert counts["experiments"] == 6 and counts["stages"] >= 6 and counts["events"] == 2
 
@@ -170,9 +168,7 @@ def test_the_experiments_database(deepvac_data_dir, wiki, tmp_path):
     ):
         with pytest.raises(brain_db.QueryError):
             brain_db.query(bad)
-    assert brain_db.query("SELECT COUNT(*) FROM experiments")["rows"] == [
-        [6]
-    ]  # nothing was changed
+    assert brain_db.query("SELECT COUNT(*) FROM experiments")["rows"] == [[6]]
     schema = brain_db.schema()
     assert (
         schema["tables"]["experiments"]["rows"] == 6

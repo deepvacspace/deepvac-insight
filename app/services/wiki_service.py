@@ -1,24 +1,4 @@
-"""The LLM wiki: the crew's knowledge of the chamber, as markdown pages ("the Brain", with the
-experiments database in brain_db.py).
-
-    wiki/
-      SCHEMA.md     how pages are written (read it before proposing an edit)
-      index.md      every page with its summary, grouped by type (rebuilt, never edited)
-      log.md        what changed and why, newest last (appended)
-      <page>.md     one topic per page, named in kebab-case
-
-A page starts with YAML-style frontmatter (title, type, tags, sources, updated) and links to
-other pages as [[page-name]]. Types: concept, procedure, reference, lesson, generated.
-"generated" pages are rewritten from the data by scripts/build_brain.py and can't be edited.
-
-Agents read the wiki (search, read, index) and may only propose changes: a proposal waits in
-data/deepvac_wiki_proposals.sqlite3 until a person approves it in Insight (Wiki Proposals), as
-chamber requests do. An approval writes the page, rebuilds the index and adds a log entry; a
-proposal made against an older version of the page is refused rather than merged.
-
-The wiki lives in the source tree (insight/wiki, versioned with git); a frozen build keeps a
-writable copy in DATA_DIR/wiki, seeded from the bundle. DEEPVAC_WIKI_DIR overrides both.
-"""
+"""The agents' wiki: markdown pages and proposals."""
 
 import hashlib
 import math
@@ -46,9 +26,6 @@ class WikiError(ValueError):
     pass
 
 
-# ---------------------------------------------------------------- where
-
-
 def wiki_dir() -> Path:
     if os.environ.get("DEEPVAC_WIKI_DIR"):
         return Path(os.environ["DEEPVAC_WIKI_DIR"])
@@ -57,7 +34,7 @@ def wiki_dir() -> Path:
         return source
     live = common.DATA_DIR / "wiki"
     bundled = Path(getattr(sys, "_MEIPASS", "")) / "wiki"
-    if bundled.is_dir():  # seed: pages the live copy doesn't have yet
+    if bundled.is_dir():
         live.mkdir(parents=True, exist_ok=True)
         for page in bundled.glob("*.md"):
             if not (live / page.name).exists():
@@ -69,11 +46,8 @@ def proposals_db() -> Path:
     return common.DATA_DIR / "deepvac_wiki_proposals.sqlite3"
 
 
-# ---------------------------------------------------------------- pages
-
-
 def parse(text: str) -> tuple[dict, str]:
-    """(frontmatter, body). Values: strings, or lists for [a, b] and "- item" lines."""
+    """Splits a page into frontmatter and body."""
     if not text.startswith("---"):
         return {}, text
     end = text.find("\n---", 3)
@@ -97,7 +71,7 @@ def parse(text: str) -> tuple[dict, str]:
 
 
 def _without_code(text: str) -> str:
-    """Text outside code blocks and inline code (examples there are not links)."""
+    """Returns the text outside code."""
     return re.sub(r"`[^`\n]*`", "", re.sub(r"```.*?```", "", text, flags=re.S))
 
 
@@ -163,7 +137,7 @@ def read_page(page_id: str) -> dict:
 
 
 def _stem(word: str) -> str:
-    """A light stemmer: plurals and common endings, so "definitions" finds "definition"."""
+    """Stems a word."""
     for ending in ("ings", "ing", "ies", "es", "s", "ed"):
         if len(word) > len(ending) + 3 and word.endswith(ending):
             return word[: -len(ending)] + ("y" if ending == "ies" else "")
@@ -175,7 +149,7 @@ def _tokens(text: str) -> list[str]:
 
 
 def search(query: str, limit: int = 8) -> list[dict]:
-    """BM25 over the pages; the title and tags count more than the body."""
+    """Searches the pages with BM25."""
     terms = _tokens(query)
     if not terms:
         return []
@@ -195,7 +169,7 @@ def search(query: str, limit: int = 8) -> list[dict]:
     if not docs:
         return []
     average = sum(d[4] for d in docs) / len(docs)
-    k1, b = 1.2, 0.9  # long pages (tables of numbers) don't win by repetition
+    k1, b = 1.2, 0.9
     scored = []
     for page, title, body, counts, length in docs:
         score = 0.0
@@ -232,13 +206,13 @@ def _snippet(body: str, terms: list[str], width: int = 220) -> str:
 
 
 def rebuild_index() -> Path:
-    """index.md: every page by type, with its summary (what an agent reads first)."""
+    """Rebuilds index.md."""
     pages = list_pages()
     order = {
         t: i for i, t in enumerate(("concept", "procedure", "reference", "lesson", "generated"))
     }
     lines = [
-        "# DeepVac wiki: index",
+        "# Deepvac wiki: index",
         "",
         "Every page with its summary. Rebuilt automatically: don't edit. How pages are written: "
         "[[SCHEMA]]; what changed: [[log]].",
@@ -271,13 +245,13 @@ def append_log(what: str, who: str = "", reason: str = "") -> None:
     text = (
         path.read_text(encoding="utf-8")
         if path.exists()
-        else "# DeepVac wiki: log\n\nNewest last.\n\n"
+        else "# Deepvac wiki: log\n\nNewest last.\n\n"
     )
     _write(path, text.rstrip("\n") + "\n" + entry + "\n")
 
 
 def lint() -> list[str]:
-    """Problems: missing frontmatter or type, links to pages that don't exist, pages nothing links to."""
+    """Returns the wiki's problems."""
     problems = []
     ids = {p.stem for p in wiki_dir().glob("*.md")}
     linked = set()
@@ -310,11 +284,8 @@ def _write(path: Path, text: str) -> None:
 
 
 def write_generated(page_id: str, text: str) -> None:
-    """A page rewritten from the data (scripts/build_brain.py)."""
+    """Writes a generated page."""
     _write(page_path(page_id), text)
-
-
-# ---------------------------------------------------------------- proposals: agents write, people approve
 
 
 def _connect():
@@ -427,7 +398,7 @@ def get_proposal(proposal_id: int) -> dict | None:
 
 
 def decide(proposal_id: int, approve: bool, user_name: str, comment: str = "") -> dict:
-    """A person's decision. Approving writes the page; a page changed since the proposal refuses it."""
+    """A person's decision."""
     if not user_name:
         raise WikiError("Only a signed-in user can decide on a proposal.")
     proposal = get_proposal(proposal_id)

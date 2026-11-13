@@ -15,7 +15,7 @@ and label) is in [[chamber-configuration]].
 - The PLC sets a bit in `alarm_out_status` for every active alarm, and `status_condition`
   becomes 4 (alarm). `alarm_in_status` holds the trigger conditions.
 - Insight names the active alarms on the Controller page and in the worker's live status;
-  DeepVac Control logs them ("PLC" messages in its event log).
+  Deepvac Control logs them ("PLC" messages in its event log).
 - Whether an alarm is processed and how it triggers is set by the PLC settings `alarm_cfg_1`
   and `alarm_cfg_2` (bit masks).
 

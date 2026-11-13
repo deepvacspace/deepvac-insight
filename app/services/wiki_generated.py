@@ -1,11 +1,4 @@
-"""The wiki's generated pages, written from the data by scripts/build_brain.py:
-
-    chamber-configuration   the chamber configuration Insight uses (data/control_settings.json)
-    experiment-history      what the experiments database holds (brain_db)
-    pid-tuning-lessons      KPIs by setpoint and PID gains, from the experiments database
-
-Every number on them comes from the data; the pages say where and when.
-"""
+"""The wiki's generated pages, written from the data."""
 
 import sqlite3
 import statistics
@@ -43,11 +36,8 @@ def _table(headers, rows):
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- chamber configuration
-
-
 def _bits_of_float(value) -> str:
-    """alarm_cfg_*: a bit mask the configuration stores as the raw bits of a float."""
+    """Returns the bit mask stored as a float."""
     try:
         bits = struct.unpack("<I", struct.pack("<f", float(value)))[0]
     except (TypeError, ValueError, struct.error):
@@ -69,9 +59,9 @@ def chamber_configuration(settings: dict | None = None) -> str:
             "calibration",
             "outputs",
         ],
-        ["insight data/control_settings.json (copied from DeepVac Control settings.json)"],
+        ["insight data/control_settings.json (copied from Deepvac Control settings.json)"],
         "The chamber's current configuration: its channels, alarms, PLC settings, PID table, calibration and "
-        "output bits, as DeepVac Control and Insight use them. What they mean: [[chamber-overview]], "
+        "output bits, as Deepvac Control and Insight use them. What they mean: [[chamber-overview]], "
         "[[pid-control]], [[alarms]].",
     )
     parts = [page]
@@ -168,9 +158,6 @@ def chamber_configuration(settings: dict | None = None) -> str:
             )
         )
     return "".join(parts) + "\n"
-
-
-# ---------------------------------------------------------------- from the experiments database
 
 
 def _rows(conn, sql, args=()):
@@ -290,7 +277,7 @@ def experiment_history(conn: sqlite3.Connection) -> str:
     ).fetchone()
     if log and log[0]:
         parts.append(
-            f"\n\n## DeepVac Control's event log\n\n{log[0]} messages from {log[1]} to {log[2]} "
+            f"\n\n## Deepvac Control's event log\n\n{log[0]} messages from {log[1]} to {log[2]} "
             "(table `events`, source `control log`)."
         )
     return "".join(parts) + "\n"

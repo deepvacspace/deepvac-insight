@@ -1,9 +1,9 @@
-# DeepVac wiki: how pages are written
+# Deepvac wiki: how pages are written
 
-The wiki is what the crew knows about the DeepVac chamber that the data alone doesn't say:
+The wiki is what the agent knows about the Deepvac chamber that the data alone doesn't say:
 how the chamber works, how to operate it, what the numbers mean, and the lessons learned from
-experiments. With the experiments database it is the crew's "Brain". People and agents read it;
-agents can only **propose** changes, and a person approves each one in DeepVac Insight
+experiments. With the experiments database it is the agent's "Brain". People and agents read it;
+agents can only **propose** changes, and a person approves each one in Deepvac Insight
 (gear menu → Wiki Proposals).
 
 ## Pages

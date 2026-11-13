@@ -1,11 +1,11 @@
 ---
-title: The DeepVac chamber
+title: The Deepvac chamber
 type: concept
 tags: [chamber, tvac, refrigeration, cascade, r404a, r23, heater, plc, overview]
 sources: [control2-client settings.json (states, monitor, plc_settings, control_params), control2-client src/assistant/assistantengine.cpp, insight app/services/plc_gate.py]
 updated: 2026-10-24
 ---
-# The DeepVac chamber
+# The Deepvac chamber
 
 What the chamber is, what it is made of and how the software talks to it. Start here; the
 current values of every setting are in [[chamber-configuration]].
@@ -45,8 +45,8 @@ measured). The PLC runs **jobs**: a manual setpoint or a program of intervals
 | | |
 |---|---|
 | PLC gate | binary TCP protocol (port 4321): the PLC sends its state about once a second; the PC sends jobs, settings and commands |
-| DeepVac Control | the operator application (C++): connects to the PLC, runs jobs, records every sample in day files and experiments in its database |
-| DeepVac Insight | analysis application (Python): run database and analysis, Controller page, full-day recording, and the Agent API the AI crew uses ([[crew-and-tools]]) |
+| Deepvac Control | the operator application (C++): connects to the PLC, runs jobs, records every sample in day files and experiments in its database |
+| Deepvac Insight | analysis application (Python): run database and analysis, Controller page, full-day recording, and the Agent API the AI agents use ([[agents-and-tools]]) |
 
 Both applications can command the same PLC; see [[limits-and-safety]]. Where the data ends up:
 [[data-and-recordings]].

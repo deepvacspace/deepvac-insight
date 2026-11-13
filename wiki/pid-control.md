@@ -24,7 +24,7 @@ judging a setting. What the data says about good settings is in [[pid-tuning-les
 The PLC holds a PID table (`p1`, "Temperature PID") that splits a temperature range into bands,
 each with its own Kp, Ki and Kd. The band in use is reported in `temp_pid_idx`. The range, the
 number of bands and the gains are in [[chamber-configuration]]; they are PLC settings written by
-an operator from DeepVac Control. Agents can't change them.
+an operator from Deepvac Control. Agents can't change them.
 
 Some older experiments (logger files, source `folder`) used three gain sets by distance to the
 setpoint — far, mid and near — recorded in their summaries (`far_kp`, `mid_kp`, `near_kp`, …).

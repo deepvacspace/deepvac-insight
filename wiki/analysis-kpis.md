@@ -7,7 +7,7 @@ updated: 2026-10-24
 ---
 # Control KPIs
 
-How every KPI of a run is computed (the Analysis Core of DeepVac Control, ported to Insight with
+How every KPI of a run is computed (the Analysis Core of Deepvac Control, ported to Insight with
 identical results). Stages and anomalies: [[analysis-stages-and-anomalies]].
 
 ## Conventions

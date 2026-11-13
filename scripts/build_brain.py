@@ -1,15 +1,4 @@
-"""Rebuilds the crew's Brain: the experiments database and the wiki's generated pages.
-
-    1. data/deepvac_brain.sqlite3 from the run database, test profiles, full-day recordings and
-       DeepVac Control's event log (app/services/brain_db.py; about 1.5 min for 1,100 runs)
-    2. wiki pages chamber-configuration, experiment-history, pid-tuning-lessons
-       (app/services/wiki_generated.py)
-    3. wiki/index.md, a log entry, and the wiki's lint report
-
-    uv run python scripts/build_brain.py [--pages-only]
-
---pages-only rewrites the generated pages from the database already built.
-"""
+"""Rebuilds the Brain: experiments database and generated wiki pages."""
 
 import argparse
 import sqlite3

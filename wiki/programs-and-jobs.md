@@ -26,7 +26,7 @@ Sending a new job replaces the running one.
 
 Each interval has a **duration** (s), a **temperature** (°C) and **flags**:
 
-| Flags | DeepVac Control calls it | What happens |
+| Flags | Deepvac Control calls it | What happens |
 |---|---|---|
 | RAMP (bit 9) | "Ramp to X °C" | the setpoint moves linearly to X over the duration |
 | AWAIT (bit 8) | "Go to X °C and hold" (maximum speed) | the setpoint jumps to X; the interval holds it for its duration |
@@ -40,7 +40,7 @@ A manual setpoint becomes one or two intervals: a ramp (when a rate is given: du
 means "until stopped".
 
 Test profiles made in Insight are a list of steps (setpoint, duration); each becomes a
-"go to and hold" interval. Profiles imported from DeepVac Control keep their PLC program.
+"go to and hold" interval. Profiles imported from Deepvac Control keep their PLC program.
 
 A **cycle** repeats a range of intervals a number of times (`cycle_cur` / `cycle_total`).
 

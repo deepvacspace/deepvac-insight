@@ -1,9 +1,9 @@
 ---
 title: The digital twin
 type: concept
-tags: [digital twin, simulation, gru, pid, what-if, model]
-sources: [insight app/services/data_service.py (simulate_gru_run), insight app/api/analyst_tools.py (simulate_pid), control2-client data/model]
-updated: 2026-10-24
+tags: [digital twin, simulation, lstm, pid, what-if, model]
+sources: [insight app/services/data_service.py (simulate_twin_run), insight app/api/analyst_tools.py (simulate_pid), control2-client data/model]
+updated: 2026-11-01
 ---
 # The digital twin
 
@@ -12,10 +12,10 @@ are simulations, never measurements: say so whenever one is quoted.
 
 ## What it is
 
-A GRU network trained on the chamber's recorded runs predicts how the temperature responds to
+An LSTM network trained on the chamber's recorded runs predicts how the temperature responds to
 the controller output; Insight closes the loop around it with the PID settings to test
-(`simulate_pid`). DeepVac Control has its own models for its AI Advisor (`data/model`: GRU,
-LSTM and twin models in ONNX).
+(`simulate_pid`). Deepvac Control uses the same network for its offline advisor and program
+forecast (`data/model/twin_model.onnx`).
 
 ## Using it (analyst `simulate_pid`)
 
