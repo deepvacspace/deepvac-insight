@@ -1,6 +1,4 @@
-"""Embedded local-network collaboration host: a small HTTPS server that
-paired Deepvac Insight installations use to share annotations, variable
-rules, run metadata and alarm events."""
+"""Local-network collaboration server."""
 
 import hmac
 import json

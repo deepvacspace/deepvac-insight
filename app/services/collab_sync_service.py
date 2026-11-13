@@ -1,5 +1,4 @@
-"""Syncs shared data with the connected collaboration host: annotations,
-variable rules, run metadata and alarm events."""
+"""Syncs shared data with the collaboration host."""
 
 import uuid
 from collections.abc import Callable
@@ -238,7 +237,7 @@ def _earliest(first, second):
 
 
 def merge_event_state(first, second):
-    """Merges two states of the same alarm event: earliest acknowledgement and earliest clear time win."""
+    """Merges two states of the same alarm event."""
     acknowledged = [s for s in (first, second) if s["acknowledged_at"]]
     if acknowledged:
         chosen = min(

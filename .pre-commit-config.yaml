@@ -9,9 +9,6 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
       - id: check-added-large-files
-        # app/model/model.pt (~170 KB) is a tracked, intentional exception --
-        # raise the threshold rather than disabling the check outright, so a
-        # genuinely large accidental commit (e.g. a run database) still trips it.
         args: ["--maxkb=1024"]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit

@@ -1,5 +1,4 @@
-"""Host-side storage for the collaboration server: paired peers and shared
-items, in their own local SQLite database."""
+"""Storage of the collaboration host."""
 
 import json
 import sqlite3
@@ -109,8 +108,7 @@ def list_deleted_uids(kind):
 
 
 def put_item(kind, uid, data, mutable):
-    """Stores an item by uid. Immutable kinds ignore a known uid (including a
-    deleted one); mutable kinds overwrite a live item's data."""
+    """Stores an item by uid."""
     conn = connect_collab_host()
     try:
         if mutable:

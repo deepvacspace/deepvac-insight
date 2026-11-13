@@ -1,7 +1,4 @@
-"""AlarmHistoryDialog — view/acknowledge past alarm events and export the
-log to CSV (app/services/alarms_service.py). Pass chamber_id to scope to
-one chamber's history (used by a chamber tab's "History…" button);
-omit it for the Dashboard's unfiltered, all-chambers view."""
+"""Dialog to view, acknowledge and export past alarm events."""
 
 from PySide6.QtWidgets import (
     QAbstractItemView,

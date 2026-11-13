@@ -1,0 +1,266 @@
+{
+  "id": "deepvacObserver01",
+  "name": "Deepvac Observer",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "nodes": [
+    {
+      "id": "0b5e7a01-0001-4000-8000-000000000001",
+      "name": "Insight event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "deepvac-observer",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "deepvac-observer",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b5e7a01-0002-4000-8000-000000000002",
+      "name": "Observer",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        280,
+        0
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ 'Event from Deepvac Insight: ' + JSON.stringify($json.body.event) }}",
+        "options": {
+          "maxIterations": 8,
+          "systemMessage": "You are the Observer of the Deepvac lab: you watch the thermal test chambers for the other agents. Deepvac Insight sends you one event at a time: an alarm, a job ending, the temperature drifting from a steady setpoint, an anomaly in the live temperature, a chamber offline, a campaign hold point or a request waiting for a person.\n\nFor each event:\n1. get_event: the facts, the chamber now, its last 30 minutes, the campaign or request involved, and the chamber's earlier events.\n2. Decide whether a person should act or know now.\n   Notify: an alarm; a chamber offline while a job or campaign runs; drift or an anomaly during a job that could spoil the test; a hold point or a request waiting for a decision; a job that ended in alarm or was stopped while a campaign ran.\n   Don't notify: a job that finished normally, a chamber back online, an alarm that cleared, a test event, or a repeat of an event notified in the last hour (see the earlier events) unless it got worse.\n3. report_event once: a summary of two or three plain sentences from the facts; notify true or false; when true, the message for people: the chamber, what happened with the numbers, what to check or decide and where (Insight's Agent Requests dialog, Test Campaigns page or Controller page). Under 600 characters, plain text.\n4. Propose a request only when the chamber or the test article is at risk and nobody may be there: propose_stop, or propose_setpoint back to ambient (20 °C) with a gentle ramp (2 °C/min). An operator still approves it; say so in the message. Never on a chamber running a test campaign: say what the operator should decide at its hold point instead.\n\nTake every number from a tool result. Never say a request was executed or a person was told before it happened. Write in English."
+        }
+      }
+    },
+    {
+      "id": "0b5e7a01-0003-4000-8000-000000000003",
+      "name": "Claude Sonnet 5.5 (observer)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        180,
+        260
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-5-5"
+        },
+        "options": {
+          "maxTokensToSample": 8000,
+          "thinkingMode": "adaptive",
+          "effort": "low",
+          "promptCaching": "5m"
+        }
+      }
+    },
+    {
+      "id": "0b5e7a01-0004-4000-8000-000000000004",
+      "name": "observer",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        400,
+        260
+      ],
+      "parameters": {
+        "endpointUrl": "http://host.docker.internal:8765/observer/mcp",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "all",
+        "options": {
+          "timeout": 60000
+        }
+      }
+    },
+    {
+      "id": "0b5e7a01-0005-4000-8000-000000000005",
+      "name": "Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        640,
+        0
+      ],
+      "parameters": {
+        "url": "=http://host.docker.internal:8765/observer/events?ids={{ $('Insight event').item.json.body.event.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b5e7a01-0006-4000-8000-000000000006",
+      "name": "Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        860,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0b5e7a01-0061-4000-8000-000000000061",
+              "leftValue": "={{ $json.events[0].notify === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0b5e7a01-0007-4000-8000-000000000007",
+      "name": "Teams",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        -100
+      ],
+      "disabled": true,
+      "parameters": {
+        "method": "POST",
+        "url": "https://REPLACE-with-your-Teams-workflow-webhook-URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', content: { type: 'AdaptiveCard', version: '1.4', body: [ { type: 'TextBlock', weight: 'Bolder', wrap: true, text: 'Deepvac ' + $json.events[0].severity + ': ' + $json.events[0].title }, { type: 'TextBlock', wrap: true, text: $json.events[0].message } ] } }] }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b5e7a01-0008-4000-8000-000000000008",
+      "name": "Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1100,
+        100
+      ],
+      "disabled": true,
+      "parameters": {
+        "fromEmail": "deepvac@REPLACE.example",
+        "toEmail": "lab@REPLACE.example",
+        "subject": "={{ '[Deepvac ' + $json.events[0].severity + '] ' + $json.events[0].title }}",
+        "emailFormat": "text",
+        "text": "={{ $json.events[0].message + '\\n\\n' + $json.events[0].summary }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b5e7a01-0009-4000-8000-000000000009",
+      "name": "Note: observer",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -360
+      ],
+      "parameters": {
+        "width": 640,
+        "height": 300,
+        "content": "### Observer (ready, not connected)\nInsight's observer monitor detects events on the chambers (alarm, job ended, drift, anomaly, offline, hold point or request waiting) and, when its push is on, POSTs each one here. The Observer reads it (Insight /observer/mcp), writes its summary back with report_event, and may propose a stop or setpoint an operator approves. **Decision** reads what it decided; **Teams** and **Email** send its message (both disabled until set up).\n\nTo connect: select the credentials (Header Auth on *Insight event*: name `Authorization`, value `Bearer <Insight token>`; Anthropic; Bearer Auth on *observer* and *Decision*), set the Teams workflow URL and/or the SMTP account and addresses and enable those nodes, **Publish**; then in Insight, gear menu → Observer Events → *Send events to the Observer workflow* → Save, and *Send Test Event*."
+      }
+    }
+  ],
+  "connections": {
+    "Insight event": {
+      "main": [
+        [
+          {
+            "node": "Observer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Sonnet 5.5 (observer)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Observer",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "observer": {
+      "ai_tool": [
+        [
+          {
+            "node": "Observer",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Observer": {
+      "main": [
+        [
+          {
+            "node": "Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision": {
+      "main": [
+        [
+          {
+            "node": "Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify?": {
+      "main": [
+        [
+          {
+            "node": "Teams",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  }
+}

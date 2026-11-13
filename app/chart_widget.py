@@ -1,9 +1,11 @@
-"""Chart infrastructure: CrosshairSyncHub, BoxZoomViewBox, ChartWidget."""
+"""Chart widgets."""
 
 import contextlib
+from datetime import datetime
 
 import numpy as np
 import pyqtgraph as pg
+import pyqtgraph.exporters  # noqa: F401
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -18,6 +20,27 @@ from PySide6.QtWidgets import (
 )
 
 from app.common import COLORS, RULE_COLOR_OPTIONS, fmt
+from app.theme_colors import HMI
+
+
+class ClockAxis(pg.AxisItem):
+    """Time axis in elapsed seconds or time of day."""
+
+    def __init__(self):
+        super().__init__("bottom")
+        self.origin = None
+
+    def tickStrings(self, values, scale, spacing):  # noqa: N802
+        if self.origin is None:
+            return super().tickStrings(values, scale, spacing)
+        fmt_ = "%H:%M:%S" if spacing < 60 else ("%H:%M" if spacing < 6 * 3600 else "%m-%d %H:%M")
+        texts = []
+        for v in values:
+            try:
+                texts.append(datetime.fromtimestamp(self.origin + v).strftime(fmt_))
+            except (OverflowError, OSError, ValueError):
+                texts.append("")
+        return texts
 
 
 class CrosshairSyncHub:
@@ -67,8 +90,8 @@ class CrosshairSyncHub:
 
 
 class BoxZoomViewBox(pg.ViewBox):
-    annotate_drag = Signal(float, float)  # final commit: x0, x1
-    annotate_preview = Signal(float, float)  # live during drag: x0, x1
+    annotate_drag = Signal(float, float)
+    annotate_preview = Signal(float, float)
 
     def __init__(self):
         super().__init__()
@@ -89,7 +112,7 @@ class BoxZoomViewBox(pg.ViewBox):
                 if x1 > x0:
                     self.annotate_drag.emit(x0, x1)
                 else:
-                    self.annotate_preview.emit(0.0, 0.0)  # zero-width = cancel
+                    self.annotate_preview.emit(0.0, 0.0)
                 self._ann_start = None
             elif self._ann_start is not None:
                 end_pt = self.mapToView(event.pos())
@@ -123,6 +146,9 @@ class ChartWidget(QWidget):
         self.mode = "line"
         self.annotations = []
         self.setpoint = None
+        self.colors = {}
+        self.tooltip_enabled = True
+        self.overlay_channel = None
         self.sync_hub = None
         self.datasets = []
         self.curves = []
@@ -135,10 +161,10 @@ class ChartWidget(QWidget):
         self.marker_flags = {"events": True, "alarms": True, "controller": True, "state": True}
         self.auto_range_on_draw = True
 
-        self.plot = pg.PlotWidget(viewBox=BoxZoomViewBox())
+        self.plot = pg.PlotWidget(viewBox=BoxZoomViewBox(), axisItems={"bottom": ClockAxis()})
         self.plot.setObjectName("chartCanvas")
         self.plot.setMinimumHeight(400)
-        self.plot.setBackground("#111827")
+        self.plot.setBackground("#122138")
         self.plot.showGrid(x=True, y=True, alpha=0.28)
         self.plot.setLabel("bottom", self.tr("Time elapsed (s)"))
         self.plot.setLabel("left", self.tr("Value"))
@@ -147,10 +173,10 @@ class ChartWidget(QWidget):
         self.plot.getViewBox().setMouseMode(pg.ViewBox.PanMode)
 
         self.crosshair_v = pg.InfiniteLine(
-            angle=90, movable=False, pen=pg.mkPen("#94a3b8", width=1, style=Qt.DashLine)
+            angle=90, movable=False, pen=pg.mkPen(HMI["steel"], width=1, style=Qt.DashLine)
         )
         self.crosshair_h = pg.InfiniteLine(
-            angle=0, movable=False, pen=pg.mkPen("#94a3b8", width=1, style=Qt.DashLine)
+            angle=0, movable=False, pen=pg.mkPen(HMI["steel"], width=1, style=Qt.DashLine)
         )
         self.crosshair_v.setVisible(False)
         self.crosshair_h.setVisible(False)
@@ -169,7 +195,7 @@ class ChartWidget(QWidget):
         self.plot.scene().sigMouseMoved.connect(self.on_mouse_moved)
 
         self.region = pg.LinearRegionItem(
-            brush=pg.mkBrush(96, 165, 250, 38), pen=pg.mkPen("#60a5fa")
+            brush=pg.mkBrush(39, 96, 230, 30), pen=pg.mkPen(HMI["cobalt"])
         )
         self.region.setZValue(-10)
         self.region.setVisible(False)
@@ -177,8 +203,8 @@ class ChartWidget(QWidget):
         self.plot.addItem(self.region, ignoreBounds=True)
 
         self._ann_preview = pg.LinearRegionItem(
-            brush=pg.mkBrush(96, 165, 250, 55),
-            pen=pg.mkPen("#60a5fa", width=1.5, style=Qt.DashLine),
+            brush=pg.mkBrush(39, 96, 230, 45),
+            pen=pg.mkPen(HMI["cobalt"], width=1.5, style=Qt.DashLine),
             movable=False,
         )
         self._ann_preview.setZValue(-14)
@@ -191,12 +217,31 @@ class ChartWidget(QWidget):
         layout.addWidget(self.plot)
 
     def set_dark(self, dark=True):
+        """Applies the light or dark chart colours."""
+        h = HMI
         self.dark = dark
-        self.plot.setBackground("#111827" if dark else "#ffffff")
+        card, area, grid, axis = (
+            (h["slate_raised"], h["slate"], h["slate_line"], h["haze"])
+            if dark
+            else (h["white"], h["plot"], h["grid"], h["axis"])
+        )
+        self.plot.setBackground(card)
+        self.plot.getViewBox().setBackgroundColor(area)
+        for name in ("left", "bottom", "right"):
+            ax = self.plot.getAxis(name)
+            ax.setPen(pg.mkPen(axis))
+            ax.setTextPen(pg.mkPen(axis))
+            ax.setTickPen(pg.mkPen(grid, style=Qt.DashLine))
+        self.plot.showGrid(x=True, y=True, alpha=1.0)
+        for line in (self.crosshair_v, self.crosshair_h):
+            line.setPen(pg.mkPen(axis, width=1, style=Qt.DashLine))
+        self.hover_label.fill = pg.mkBrush(card)
+        self.hover_label.border = pg.mkPen(h["cobalt"])
+        self.hover_label.setColor(h["pearl"] if dark else h["slate"])
         self.redraw()
 
     def redraw(self):
-        self.draw(self.payload, self.mode, self.annotations, self.setpoint)
+        self.draw(self.payload, self.mode, self.annotations, self.setpoint, self.colors)
 
     def draw(self, payload, mode="line", annotations=None, setpoint=None, colors=None):
         view_range = self.plot.getViewBox().viewRange()
@@ -240,7 +285,7 @@ class ChartWidget(QWidget):
         self.draw_overlays()
         if setpoint is not None:
             self.add_horizontal_marker(
-                setpoint, self.tr("Setpoint {0}").format(fmt(setpoint, 2)), "#94a3b8"
+                setpoint, self.tr("Setpoint {0}").format(fmt(setpoint, 2)), HMI["steel"]
             )
         if self.auto_range_on_draw:
             self.plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
@@ -258,6 +303,18 @@ class ChartWidget(QWidget):
         self.overlay_items = []
         if self.legend:
             self.legend.clear()
+
+    def set_clock_origin(self, epoch):
+        """Sets the time-of-day origin of the time axis."""
+        axis = self.plot.getAxis("bottom")
+        if axis.origin == epoch:
+            return
+        axis.origin = epoch
+        self.plot.setLabel(
+            "bottom", self.tr("Time") if epoch is not None else self.tr("Time elapsed (s)")
+        )
+        axis.picture = None
+        axis.update()
 
     def reset_view(self):
         self.auto_range_on_draw = True
@@ -354,8 +411,16 @@ class ChartWidget(QWidget):
         smoothed = np.convolve(ys, kernel, mode="same")
         return list(zip(xs.tolist(), smoothed.tolist(), strict=False))
 
+    def set_overlay_channel(self, label):
+        """Sets the channel of the reference lines."""
+        self.overlay_channel = label
+        self.redraw()
+
     def draw_overlays(self):
-        all_points = [p for ds in self.datasets for p in self.apply_smoothing(ds["points"])]
+        chosen = [ds for ds in self.datasets if ds["label"] == self.overlay_channel]
+        all_points = [
+            p for ds in chosen or self.datasets for p in self.apply_smoothing(ds["points"])
+        ]
         if not all_points:
             return
         ys = np.array([p[1] for p in all_points], dtype=float)
@@ -363,21 +428,21 @@ class ChartWidget(QWidget):
             self.add_horizontal_marker(
                 float(np.min(ys)),
                 self.tr("Min {0}").format(fmt(np.min(ys), 3)),
-                "#51d6c7",
+                HMI["cobalt"],
                 overlay=True,
             )
         if self.overlay_flags.get("max"):
             self.add_horizontal_marker(
                 float(np.max(ys)),
                 self.tr("Max {0}").format(fmt(np.max(ys), 3)),
-                "#ff6f7d",
+                HMI["alarm"],
                 overlay=True,
             )
         if self.overlay_flags.get("avg"):
             self.add_horizontal_marker(
                 float(np.mean(ys)),
                 self.tr("Avg {0}").format(fmt(np.mean(ys), 3)),
-                "#f2bd52",
+                HMI["connecting"],
                 overlay=True,
             )
 
@@ -387,11 +452,11 @@ class ChartWidget(QWidget):
             if not self.marker_flags.get(cat, True):
                 continue
             color = {
-                "events": "#8bd66f",
-                "alarms": "#ff6f7d",
-                "controller": "#f2bd52",
-                "state": "#b792ff",
-            }.get(cat, "#94a3b8")
+                "events": HMI["live"],
+                "alarms": HMI["alarm"],
+                "controller": HMI["connecting"],
+                "state": HMI["steel"],
+            }.get(cat, HMI["haze"])
             atype = ann.get("type")
             if atype == "line-x":
                 self.add_vertical_marker(ann.get("x"), ann.get("label", self.tr("Marker")), color)
@@ -550,8 +615,16 @@ class ChartWidget(QWidget):
             text = label_ed.text().strip() or self.tr("t={0:.1f}–{1:.1f} s").format(x0, x1)
             self.annotation_committed.emit({"x0": x0, "x1": x1, "label": text, "color": color})
 
+    def set_tooltip_enabled(self, enabled: bool):
+        """Enables the crosshair tooltip."""
+        self.tooltip_enabled = bool(enabled)
+        if not enabled:
+            self.crosshair_v.setVisible(False)
+            self.crosshair_h.setVisible(False)
+            self.hover_label.setVisible(False)
+
     def on_mouse_moved(self, scene_pos):
-        if not self.plot.sceneBoundingRect().contains(scene_pos):
+        if not self.tooltip_enabled or not self.plot.sceneBoundingRect().contains(scene_pos):
             self.crosshair_v.setVisible(False)
             self.crosshair_h.setVisible(False)
             self.hover_label.setVisible(False)

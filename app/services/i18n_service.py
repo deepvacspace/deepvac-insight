@@ -1,14 +1,4 @@
-"""Language selection and Qt translator loading.
-
-Source strings in the code are English, wrapped in self.tr(...) throughout
-the UI modules. Translations are compiled .qm files (built from .ts files
-via pyside6-lupdate/pyside6-lrelease) under resources/i18n/.
-
-Widgets read their text once, at construction time, via tr() -- there is no
-live retranslation machinery here (no LanguageChange event handling / UI
-rebuild). Switching languages therefore takes effect on the next restart;
-the Settings menu makes that explicit rather than silently doing nothing.
-"""
+"""Language selection and Qt translator loading."""
 
 from PySide6.QtCore import QTranslator
 
@@ -26,10 +16,7 @@ _installed_translator = None
 
 
 def install_language(app, code):
-    """Install the translator for `code` on `app`, replacing any previously
-    installed one. code="en" (the source language) just removes any active
-    translator. Returns True if a .qm file was loaded, False otherwise
-    (including for "en", where none is needed)."""
+    """Installs the translator for a language."""
     global _installed_translator
 
     if _installed_translator is not None:

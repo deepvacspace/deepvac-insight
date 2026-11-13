@@ -1,12 +1,4 @@
-"""Persisted registry of named chamber connections (name + host + port), in
-its own local SQLite database.
-
-The app can connect to several of these at once (up to
-chamber_session.MAX_CONNECTED_CHAMBERS, see views/monitoring.py and
-main_window.py's _connect_chamber) (a run saved via
-"Save Session as Run" is tagged with whichever chamber was connected at the
-time -- see data_service.save_monitoring_session()'s chamber parameter).
-"""
+"""Registry of saved chamber connections."""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -32,9 +24,7 @@ def _ensure_hub_sync_columns(conn):
 
 
 def connect_chambers(db_path=None):
-    """db_path overrides CHAMBERS_DB for this call only -- see
-    auth_service.connect_auth()'s docstring for why the other functions in
-    this file use the module-level constant implicitly instead."""
+    """Opens the chambers database."""
     path = db_path or CHAMBERS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -54,11 +44,11 @@ def connect_chambers(db_path=None):
         """
     )
     _ensure_hub_sync_columns(conn)
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(chambers)")}
+    if "protocol" not in existing:
+        conn.execute("ALTER TABLE chambers ADD COLUMN protocol TEXT NOT NULL DEFAULT 'json'")
     conn.commit()
 
-    # Seed one default entry on first run so the chamber dropdown is never
-    # empty out of the box -- matches the host/port defaults the old,
-    # single-connection UI used to hardcode (127.0.0.1:5555).
     if conn.execute("SELECT 1 FROM chambers LIMIT 1").fetchone() is None:
         conn.execute(
             "INSERT INTO chambers (name, host, port, created_at) VALUES (?, ?, ?, ?)",
@@ -81,6 +71,7 @@ def _row(row):
         "created_at": row["created_at"],
         "hub_id": row["hub_id"],
         "hub_synced_at": row["hub_synced_at"],
+        "protocol": row["protocol"],
     }
 
 
@@ -106,14 +97,19 @@ def _validate(name, host, port):
         raise ChamberError("Port must be between 1 and 65535.")
 
 
-def add_chamber(name, host, port, hub_id=None):
+PROTOCOLS = ("json", "plc")
+
+
+def add_chamber(name, host, port, hub_id=None, protocol="json"):
     _validate(name, host, port)
+    if protocol not in PROTOCOLS:
+        raise ChamberError(f"Protocol must be one of {', '.join(PROTOCOLS)}.")
     conn = connect_chambers()
     try:
         try:
             cur = conn.execute(
-                "INSERT INTO chambers (name, host, port, created_at, hub_id, hub_synced_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO chambers (name, host, port, created_at, hub_id, hub_synced_at, protocol) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     name.strip(),
                     host.strip(),
@@ -121,6 +117,7 @@ def add_chamber(name, host, port, hub_id=None):
                     _now(),
                     hub_id,
                     _now() if hub_id else None,
+                    protocol,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -164,14 +161,18 @@ def touch_hub_synced(chamber_id):
         conn.close()
 
 
-def update_chamber(chamber_id, name, host, port):
+def update_chamber(chamber_id, name, host, port, protocol=None):
+    """Updates a saved chamber."""
     _validate(name, host, port)
+    if protocol is not None and protocol not in PROTOCOLS:
+        raise ChamberError(f"Protocol must be one of {', '.join(PROTOCOLS)}.")
     conn = connect_chambers()
     try:
         try:
             conn.execute(
-                "UPDATE chambers SET name = ?, host = ?, port = ? WHERE id = ?",
-                (name.strip(), host.strip(), int(port), chamber_id),
+                "UPDATE chambers SET name = ?, host = ?, port = ?, protocol = COALESCE(?, protocol) "
+                "WHERE id = ?",
+                (name.strip(), host.strip(), int(port), protocol, chamber_id),
             )
         except sqlite3.IntegrityError as exc:
             raise ChamberError(f"A chamber named '{name}' already exists.") from exc

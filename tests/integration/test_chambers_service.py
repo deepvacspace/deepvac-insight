@@ -1,6 +1,4 @@
-"""Integration tests for app/services/chambers_service.py -- the saved
-chamber registry (name/host/port) Live Monitoring's chamber picker reads
-from, replacing the old single hardcoded host/port fields."""
+"""Tests of the chamber registry."""
 
 import pytest
 

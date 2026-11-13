@@ -1,14 +1,4 @@
-"""A restricted arithmetic-expression evaluator for user-authored derived
-variables (e.g. "temp_u_p + temp_u_i + temp_u_d", "sqrt(abs(error))").
-
-Deliberately not Python's eval()/exec(): those run arbitrary code (file
-access, imports, anything) for a feature whose whole point is letting an
-end user type a formula into a text field. This walks the parsed AST and
-only accepts a small whitelist of node types and function names -- anything
-else (attribute access, subscripting, comprehensions, lambdas, calls to
-anything not on the whitelist, ...) raises SafeEvalError rather than
-silently doing something unexpected.
-"""
+"""Restricted arithmetic expression evaluator for derived variables."""
 
 import ast
 import operator
@@ -83,12 +73,7 @@ def _eval_node(node, variables):
 
 
 def evaluate(expression, variables):
-    """variables: dict[str, np.ndarray | float] of names the expression may
-    reference. Returns whatever the expression evaluates to (typically an
-    ndarray, if any variable used was one). Raises SafeEvalError for
-    anything outside the supported grammar, and ValueError/ZeroDivisionError
-    /etc. for legitimate runtime numeric errors (e.g. division by zero) --
-    callers should catch both."""
+    """Evaluates an expression with the given variables."""
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
@@ -97,12 +82,7 @@ def evaluate(expression, variables):
 
 
 def referenced_names(expression):
-    """Every ast.Name the expression references as a *variable*, valid or
-    not -- used to check "does this run actually have the channels this
-    formula needs" before attempting to evaluate it. Excludes function
-    names in call position (e.g. the `sqrt` in `sqrt(x)`): ast.Call.func is
-    itself an ast.Name node, so a naive ast.walk() would otherwise treat
-    every function call in the expression as an extra required channel."""
+    """Returns the variable names an expression references."""
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:

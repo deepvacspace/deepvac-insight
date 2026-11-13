@@ -1,5 +1,4 @@
-"""DeviceCodeWindow — shared browser-based device-code flow UI, subclassed
-by LicenseActivationWindow and AccountLinkWindow."""
+"""Base window for the browser-based device-code flow."""
 
 import webbrowser
 

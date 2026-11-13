@@ -1,8 +1,8 @@
-"""ChambersDialog — add/edit/delete saved chamber connections
-(app/services/chambers_service.py) from Live Monitoring's chamber picker."""
+"""Dialog to manage saved chamber connections."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -36,7 +36,7 @@ class ChambersDialog(QDialog):
 
         info = QLabel(
             self.tr(
-                "Saved chambers you can pick from in Live Monitoring."
+                "Saved chambers you can pick from in the Controller and the Analysis Live tab."
                 " Double-click one below to edit it."
             )
         )
@@ -62,6 +62,17 @@ class ChambersDialog(QDialog):
         host_row.addWidget(self._host_ed)
         host_row.addWidget(self._port_spin)
         form.addRow(self.tr("Host / Port"), host_row)
+        self._protocol_combo = QComboBox()
+        self._protocol_combo.addItem(self.tr("Sample feed (JSON, e.g. Deepvac Control)"), "json")
+        self._protocol_combo.addItem(self.tr("Chamber PLC (PLC gate)"), "plc")
+        self._protocol_combo.setToolTip(
+            self.tr(
+                "JSON: newline-JSON samples, connected and controlled from the Controller page.\n"
+                "PLC: the chamber's PLC itself, followed in the Analysis Live tab and used by the "
+                "Agent API."
+            )
+        )
+        form.addRow(self.tr("Connection"), self._protocol_combo)
         root.addLayout(form)
 
         button_row = QHBoxLayout()
@@ -87,7 +98,10 @@ class ChambersDialog(QDialog):
     def _refresh_list(self):
         self._list.clear()
         for chamber in chambers_service.list_chambers():
-            item = QListWidgetItem(f"{chamber['name']}  —  {chamber['host']}:{chamber['port']}")
+            kind = "PLC" if chamber.get("protocol") == "plc" else "JSON"
+            item = QListWidgetItem(
+                f"{chamber['name']}  —  {chamber['host']}:{chamber['port']}  ({kind})"
+            )
             item.setData(Qt.UserRole, chamber)
             self._list.addItem(item)
 
@@ -97,6 +111,9 @@ class ChambersDialog(QDialog):
         self._name_ed.setText(chamber["name"])
         self._host_ed.setText(chamber["host"])
         self._port_spin.setValue(chamber["port"])
+        self._protocol_combo.setCurrentIndex(
+            max(0, self._protocol_combo.findData(chamber.get("protocol") or "json"))
+        )
         self._save_btn.setText(self.tr("Save Changes"))
 
     def _reset_form(self):
@@ -104,17 +121,19 @@ class ChambersDialog(QDialog):
         self._name_ed.clear()
         self._host_ed.setText("127.0.0.1")
         self._port_spin.setValue(5555)
+        self._protocol_combo.setCurrentIndex(0)
         self._save_btn.setText(self.tr("Add"))
 
     def _save(self):
         name = self._name_ed.text().strip()
         host = self._host_ed.text().strip()
         port = self._port_spin.value()
+        protocol = self._protocol_combo.currentData()
         try:
             if self._editing_id is not None:
-                chambers_service.update_chamber(self._editing_id, name, host, port)
+                chambers_service.update_chamber(self._editing_id, name, host, port, protocol)
             else:
-                chambers_service.add_chamber(name, host, port)
+                chambers_service.add_chamber(name, host, port, protocol=protocol)
         except chambers_service.ChamberError as exc:
             QMessageBox.critical(self, self.tr("Could not save chamber"), str(exc))
             return

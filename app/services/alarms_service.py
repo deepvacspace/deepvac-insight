@@ -1,27 +1,4 @@
-"""Persistent alarm rules and alarm history for Live Monitoring, in their
-own local SQLite database -- rules and past events both survive restarts
-(unlike the in-memory-only alarm list this replaces).
-
-Two tables: alarm_rules (the persistent definition: name, variable,
-condition, threshold(s), severity, deadband, delay, and which chamber it
-belongs to) and alarm_events (one row per trigger, with
-acknowledgement/comment fields and a cleared_at timestamp set when the
-condition stops holding).
-
-Rules are scoped per-chamber, not shared -- chamber_id ties a rule to one
-row in chambers_service's chambers table. chamber_name is denormalized
-onto both alarm_rules and alarm_events at write time (same pattern
-annotations_service.py uses for its creator-name snapshot) so a rule's or
-event's chamber still displays correctly even if that chamber is later
-renamed or deleted.
-
-Runtime-only evaluation state (is it *currently* active right now, given
-the live samples flowing in) is NOT stored here -- see
-services/chamber_session.py's ChamberSession._evaluate_alarms(), which
-keeps that in memory alongside each loaded rule dict and calls
-record_trigger()/record_clear() at the moments those transitions actually
-happen.
-"""
+"""Alarm rules and alarm history for connected chambers."""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -35,9 +12,7 @@ SEVERITIES = ["Info", "Warning", "Critical"]
 
 
 def connect_alarms(db_path=None):
-    """db_path overrides ALARMS_DB for this call only -- see
-    auth_service.connect_auth()'s docstring for why the other functions in
-    this file use the module-level constant implicitly instead."""
+    """Opens the alarms database."""
     path = db_path or ALARMS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -147,9 +122,7 @@ def _event_row(row):
 
 
 def list_rules(chamber_id=None):
-    """chamber_id=None returns every rule regardless of chamber (used by
-    any future cross-chamber admin view); pass it to scope to one
-    chamber's rules -- this is what every chamber tab does."""
+    """Returns the alarm rules, of one chamber or all."""
     conn = connect_alarms()
     try:
         if chamber_id is None:
@@ -284,11 +257,7 @@ def touch_hub_synced(rule_id):
 
 
 def record_trigger(rule, trigger_value):
-    """Inserts a new alarm_events row for a rule that just transitioned
-    inactive -> active. Returns the new event's id (needed by
-    record_clear() later for this same episode). chamber_id/chamber_name
-    are copied from the rule dict so the event still shows the right
-    chamber even if that chamber is later renamed or deleted."""
+    """Inserts a new alarm_events row for a rule that just transitioned inactive -> active."""
     conn = connect_alarms()
     try:
         cur = conn.execute(

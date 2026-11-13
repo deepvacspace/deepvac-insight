@@ -1,5 +1,4 @@
-"""Local read-only cache of the run catalog shared through the collaboration
-host, in its own local SQLite database."""
+"""Local cache of the runs shared through the collaboration host."""
 
 import json
 import sqlite3

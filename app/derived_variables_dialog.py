@@ -1,6 +1,4 @@
-"""DerivedVariablesDialog — create/delete derived-variable definitions
-(app/services/derived_variables_service.py) from the Analysis tab's
-channel picker."""
+"""Dialog to manage derived-variable definitions."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -30,7 +28,7 @@ class DerivedVariablesDialog(QDialog):
         super().__init__(parent)
         self.available_columns = list(available_columns)
         self.current_user = current_user or {"name": "Unknown"}
-        self.changed = False  # caller checks this to know whether to reload
+        self.changed = False
 
         self.setWindowTitle(self.tr("Manage Derived Variables"))
         self.setMinimumWidth(480)

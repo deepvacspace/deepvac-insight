@@ -1,4 +1,4 @@
-"""Entry point — login flow, splash screen, and main() only."""
+"""Application entry point: login, splash screen and main window."""
 
 import sys
 
@@ -14,7 +14,6 @@ from app.services import (
     backup_service,
     i18n_service,
     log_service,
-    org_directory_sync_service,
     settings_service,
 )
 
@@ -71,6 +70,17 @@ def _show_splash(app, window_receiver_attr_name=None):
     return splash
 
 
+_gc_guard = None
+
+
+def _collect_garbage_in_gui_thread():
+    """Runs Python's garbage collection in the GUI thread."""
+    global _gc_guard
+    from pyqtgraph.util.garbage_collector import GarbageCollector
+
+    _gc_guard = GarbageCollector(interval=1.0)
+
+
 def _run_smoke_test(no_splash=False):
     """Runs the startup path headlessly and exits, for CI smoke checks."""
     failure = {}
@@ -83,6 +93,7 @@ def _run_smoke_test(no_splash=False):
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(ICON_PATH))
+    _collect_garbage_in_gui_thread()
     i18n_service.install_language(app, settings_service.load_language())
 
     try:
@@ -116,22 +127,6 @@ def _run_smoke_test(no_splash=False):
     return 0
 
 
-def _link_activation_account(user, activated_account):
-    """Attaches a freshly-activated hub account to a local profile, if any."""
-    if activated_account is None or user.get("hub_user_id"):
-        return user
-    try:
-        return auth_service.link_hub_account(
-            user["id"],
-            hub_user_id=activated_account["user_id"],
-            hub_email=activated_account["email"],
-            hub_org_id=activated_account["organization_id"],
-            hub_org_name=activated_account["organization_name"],
-        )
-    except auth_service.AuthError:
-        return user
-
-
 def main():
     args = sys.argv[1:]
     if "--smoke-test" in args:
@@ -143,6 +138,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(ICON_PATH))
+    _collect_garbage_in_gui_thread()
     i18n_service.install_language(app, settings_service.load_language())
 
     try:
@@ -151,9 +147,6 @@ def main():
         print(f"[backup] startup backup skipped: {exc}")
 
     user = _remembered_user()
-    if user is not None:
-        user = _link_activation_account(user, activated_account)
-        activated_account = None
 
     while True:
         if user is None:
@@ -163,8 +156,6 @@ def main():
             user = login.authenticated_user
             if user is None:
                 sys.exit(0)
-            user = _link_activation_account(user, activated_account)
-            activated_account = None
 
         splash = None if no_splash else _show_splash(app)
 

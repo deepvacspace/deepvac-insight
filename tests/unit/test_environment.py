@@ -1,7 +1,4 @@
-"""Phase 1 placeholder: proves the test environment itself is wired up
-correctly (right Python version, app package importable) before any real
-test suites exist. Superseded in relevance once Phase 3/4/5 land, but kept
-as a fast sanity check."""
+"""Checks the test environment."""
 
 import sys
 

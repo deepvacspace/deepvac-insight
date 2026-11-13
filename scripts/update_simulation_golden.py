@@ -1,17 +1,4 @@
-"""Regenerates tests/fixtures/simulation/golden_case_1.json by running the
-*real* production checkpoint (app/model/model.pt) through simulate_candidate().
-
-This is deliberately not run automatically by any test -- the golden
-fixture is a frozen regression baseline for the actual trained model.
-Silently regenerating it on a numerical change would just make the
-"golden" file agree with whatever the new (possibly wrong) behavior is,
-defeating the entire point. Only run this after confirming by hand that a
-trajectory change is an *intentional* one (a retrained checkpoint, a
-deliberate simulate_candidate() change) -- see docs/testing.md.
-
-Usage:
-    uv run python scripts/update_simulation_golden.py --confirm
-"""
+"""Regenerates the simulation golden fixture."""
 
 import argparse
 import json

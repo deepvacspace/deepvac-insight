@@ -1,5 +1,4 @@
-"""Tests for test_profile_sync_service's push/pull/conflict logic, against
-a fake in-memory hub standing in for licensing_client.signed_request_json."""
+"""Tests of test profile sync."""
 
 import uuid
 

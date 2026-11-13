@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""One-off script: fills <translation> elements in deepvac_es.ts / deepvac_de.ts
-from the dictionaries below, matched by <source> text. Not part of the app;
-delete after use (or keep for future re-runs after pyside6-lupdate refreshes
-the .ts files with new/changed source strings)."""
+"""Fills the Spanish and German translation files."""
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -87,7 +84,7 @@ ES = {
     "DEEPVAC": "DEEPVAC",
     "Dark": "Oscuro",
     "Dashboard": "Panel principal",
-    "DeepVac Dashboard": "Panel de DeepVac",
+    "Deepvac Dashboard": "Panel de Deepvac",
     "Define thresholds that notify you when values go out of range.":
         "Define umbrales que te avisen cuando los valores salgan de rango.",
     "Delete Report": "Eliminar informe",
@@ -232,7 +229,7 @@ ES = {
     "Severity": "Gravedad",
     "Sign In": "Iniciar sesión",
     "Sign in": "Iniciar sesión",
-    "Sign in — DeepVac Insight": "Iniciar sesión — DeepVac Insight",
+    "Sign in — Deepvac Insight": "Iniciar sesión — Deepvac Insight",
     "Simulation failed": "Error en la simulación",
     "Simulator": "Simulador",
     "Size: {0}": "Tamaño: {0}",
@@ -241,7 +238,7 @@ ES = {
     "Start": "Inicio",
     "Start Server": "Iniciar servidor",
     "Start Temp": "Temp. inicial",
-    "Starting DeepVac…": "Iniciando DeepVac…",
+    "Starting Deepvac…": "Iniciando Deepvac…",
     "State": "Estado",
     "Status": "Estado",
     "Status: {0}": "Estado: {0}",
@@ -253,8 +250,8 @@ ES = {
     "Temperature [deg C]": "Temperatura [°C]",
     "The connection is push-based (the chamber sends samples as they occur) — this is reserved for future poll-based protocols.":
         "La conexión funciona por envío directo (la cámara envía las muestras a medida que ocurren); esto está reservado para futuros protocolos por sondeo.",
-    "The new language will take effect the next time you start DeepVac.":
-        "El nuevo idioma tendrá efecto la próxima vez que inicies DeepVac.",
+    "The new language will take effect the next time you start Deepvac.":
+        "El nuevo idioma tendrá efecto la próxima vez que inicies Deepvac.",
     "Themes": "Temas",
     "Time elapsed (s)": "Tiempo transcurrido (s)",
     "Time: {0} s": "Tiempo: {0} s",
@@ -289,7 +286,7 @@ ES = {
     "{0} max": "{0} máx",
     "{0} min": "{0} mín",
     "{0} s": "{0} s",
-    "⌕   DeepVac Dashboard": "⌕   Panel de DeepVac",
+    "⌕   Deepvac Dashboard": "⌕   Panel de Deepvac",
     "Blue": "Azul",
     "Green": "Verde",
     "Amber": "Ámbar",
@@ -377,7 +374,7 @@ DE = {
     "DEEPVAC": "DEEPVAC",
     "Dark": "Dunkel",
     "Dashboard": "Übersicht",
-    "DeepVac Dashboard": "DeepVac-Übersicht",
+    "Deepvac Dashboard": "Deepvac-Übersicht",
     "Define thresholds that notify you when values go out of range.":
         "Lege Schwellenwerte fest, die dich benachrichtigen, wenn Werte den Bereich verlassen.",
     "Delete Report": "Bericht löschen",
@@ -522,7 +519,7 @@ DE = {
     "Severity": "Schweregrad",
     "Sign In": "Anmelden",
     "Sign in": "Anmelden",
-    "Sign in — DeepVac Insight": "Anmelden — DeepVac Insight",
+    "Sign in — Deepvac Insight": "Anmelden — Deepvac Insight",
     "Simulation failed": "Simulation fehlgeschlagen",
     "Simulator": "Simulator",
     "Size: {0}": "Größe: {0}",
@@ -531,7 +528,7 @@ DE = {
     "Start": "Start",
     "Start Server": "Server starten",
     "Start Temp": "Starttemp.",
-    "Starting DeepVac…": "DeepVac wird gestartet…",
+    "Starting Deepvac…": "Deepvac wird gestartet…",
     "State": "Zustand",
     "Status": "Status",
     "Status: {0}": "Status: {0}",
@@ -543,8 +540,8 @@ DE = {
     "Temperature [deg C]": "Temperatur [°C]",
     "The connection is push-based (the chamber sends samples as they occur) — this is reserved for future poll-based protocols.":
         "Die Verbindung ist Push-basiert (die Kammer sendet Messwerte, sobald sie auftreten) — dies ist für zukünftige Abfrage-basierte Protokolle vorgesehen.",
-    "The new language will take effect the next time you start DeepVac.":
-        "Die neue Sprache wird beim nächsten Start von DeepVac wirksam.",
+    "The new language will take effect the next time you start Deepvac.":
+        "Die neue Sprache wird beim nächsten Start von Deepvac wirksam.",
     "Themes": "Designs",
     "Time elapsed (s)": "Verstrichene Zeit (s)",
     "Time: {0} s": "Zeit: {0} s",
@@ -579,7 +576,7 @@ DE = {
     "{0} max": "{0} max",
     "{0} min": "{0} min",
     "{0} s": "{0} s",
-    "⌕   DeepVac Dashboard": "⌕   DeepVac-Übersicht",
+    "⌕   Deepvac Dashboard": "⌕   Deepvac-Übersicht",
     "Blue": "Blau",
     "Green": "Grün",
     "Amber": "Bernstein",

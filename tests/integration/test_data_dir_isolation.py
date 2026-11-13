@@ -1,6 +1,4 @@
-"""Proves the deepvac_data_dir fixture actually isolates every database
-this app writes to -- the load-bearing guarantee the rest of the suite
-(and Phase 3/4's tests) depends on to never touch real user data."""
+"""Tests that the data directory fixture isolates every database."""
 
 import pytest
 
@@ -36,8 +34,6 @@ def test_backup_service_writes_inside_isolated_dir(deepvac_data_dir):
 
 
 def test_two_tests_get_independently_isolated_directories(deepvac_data_dir, tmp_path):
-    # Guards against a fixture that accidentally shares state across tests
-    # (e.g. a module-level default instead of a fresh tmp_path each time).
     from app.services import auth_service
 
     assert not list(deepvac_data_dir.glob("*.sqlite3"))

@@ -1,6 +1,4 @@
-"""Integration tests for app/services/test_profiles_service.py -- reusable
-multi-step temperature/pressure test profile definitions (name + ordered
-steps), the "replaces Recipes" concept on the Dashboard."""
+"""Tests of test profiles."""
 
 import pytest
 

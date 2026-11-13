@@ -1,4 +1,4 @@
-"""LoginWindow — sign in / create account screen shown before the main window."""
+"""Sign-in and account creation window."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.common import ICON_PATH, LOGO_PATH
-from app.services import auth_service
+from app.common import ICON_PATH, LOGO_PATH, LOGO_WHITE_PATH
+from app.services import auth_service, settings_service
 
 
 class LoginWindow(QWidget):
@@ -30,15 +30,13 @@ class LoginWindow(QWidget):
         self._show_login()
         self._center_on_screen()
 
-    # ── UI ───────────────────────────────────────────────────────────────
-
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 32, 36, 28)
         root.setSpacing(14)
 
         logo_lbl = QLabel()
-        pix = QPixmap(LOGO_PATH)
+        pix = QPixmap(LOGO_WHITE_PATH if settings_service.load_theme() else LOGO_PATH)
         if not pix.isNull():
             logo_lbl.setPixmap(pix.scaledToHeight(48, Qt.SmoothTransformation))
         else:
@@ -164,8 +162,6 @@ class LoginWindow(QWidget):
             geo.y() + (geo.height() - self.height()) // 2,
         )
 
-    # ── Actions ──────────────────────────────────────────────────────────
-
     def _do_login(self):
         email = self.login_email.text().strip()
         password = self.login_password.text()
@@ -218,30 +214,41 @@ class LoginWindow(QWidget):
         super().closeEvent(event)
 
     def _apply_style(self):
-        self.setStyleSheet("""
-            QWidget { background: #0b1020; color: #f8fafc; font-family: "Segoe UI"; font-size: 10.5pt; }
-            QLabel#brand { font-size: 20px; font-weight: 900; color: #60a5fa; }
-            QLabel#formTitle { font-size: 16px; font-weight: 800; color: #f8fafc; margin-top: 4px; }
-            QLabel#mutedLabel { color: #94a3b8; background: transparent; }
-            QLabel#errorLabel {
-                color: #ff6f7d; background: rgba(255,111,125,0.08);
-                border: 1px solid #ff6f7d; border-radius: 6px; padding: 6px 10px;
-            }
-            QLineEdit {
-                background: #111827; color: #f8fafc; border: 1px solid #253247;
+        """Applies the last session's theme."""
+        from app.theme_colors import HMI as h
+
+        if settings_service.load_theme():
+            c = {"bg": h["slate"], "field": h["slate_raised"], "text": h["pearl"], "muted": h["haze"],
+                 "border": h["slate_line"], "accent": h["cobalt"], "hover": h["cobalt_pressed"],
+                 "button": h["slate_raised"], "error": h["alarm"]}  # fmt: skip
+        else:
+            c = {"bg": h["plot"], "field": h["white"], "text": h["slate"], "muted": h["steel"],
+                 "border": h["border"], "accent": h["cobalt"], "hover": h["cobalt_pressed"],
+                 "button": h["white"], "error": h["alarm"]}  # fmt: skip
+        self.setStyleSheet(f"""
+            QWidget {{ background: {c["bg"]}; color: {c["text"]}; font-family: "Segoe UI"; font-size: 10.5pt; }}
+            QLabel#brand {{ font-size: 20px; font-weight: 900; color: {c["accent"]}; }}
+            QLabel#formTitle {{ font-size: 16px; font-weight: 800; color: {c["text"]}; margin-top: 4px; }}
+            QLabel#mutedLabel {{ color: {c["muted"]}; background: transparent; }}
+            QLabel#errorLabel {{
+                color: {c["error"]}; background: transparent;
+                border: 1px solid {c["error"]}; border-radius: 6px; padding: 6px 10px;
+            }}
+            QLineEdit {{
+                background: {c["field"]}; color: {c["text"]}; border: 1px solid {c["border"]};
                 border-radius: 8px; padding: 6px 10px;
-            }
-            QLineEdit:focus { border-color: #60a5fa; }
-            QCheckBox { color: #94a3b8; spacing: 7px; background: transparent; }
-            QPushButton {
-                background: #1e293b; color: #f8fafc; border: 1px solid #253247;
+            }}
+            QLineEdit:focus {{ border-color: {c["accent"]}; }}
+            QCheckBox {{ color: {c["muted"]}; spacing: 7px; background: transparent; }}
+            QPushButton {{
+                background: {c["button"]}; color: {c["text"]}; border: 1px solid {c["border"]};
                 border-radius: 8px; padding: 6px 12px; font-weight: 650;
-            }
-            QPushButton:hover { background: #172033; border-color: #60a5fa; }
-            QPushButton#primaryButton { background: #2563eb; border-color: #2563eb; color: #ffffff; }
-            QPushButton#primaryButton:hover { background: #60a5fa; border-color: #60a5fa; }
-            QPushButton#linkButton {
-                background: transparent; border: none; color: #60a5fa; font-weight: 700; padding: 0;
-            }
-            QPushButton#linkButton:hover { color: #93c5fd; }
+            }}
+            QPushButton:hover {{ border-color: {c["accent"]}; }}
+            QPushButton#primaryButton {{ background: {c["accent"]}; border-color: {c["accent"]}; color: #ffffff; }}
+            QPushButton#primaryButton:hover {{ background: {c["hover"]}; border-color: {c["hover"]}; }}
+            QPushButton#linkButton {{
+                background: transparent; border: none; color: {c["accent"]}; font-weight: 700; padding: 0;
+            }}
+            QPushButton#linkButton:hover {{ text-decoration: underline; }}
         """)

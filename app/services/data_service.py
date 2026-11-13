@@ -22,8 +22,6 @@ CACHE_DB = DATA_DIR / "deepvac_runs.sqlite3"
 
 
 def _tr(text):
-    # Not a QObject here, so QCoreApplication.translate() rather than
-    # self.tr() -- pyside6-lupdate recognizes this pattern too.
     return QCoreApplication.translate("DataService", text)
 
 
@@ -38,8 +36,6 @@ def workspace_root():
 
     current = Path(__file__).resolve()
     for parent in current.parents:
-        # deepvac layouts put data either directly under the workspace root
-        # (optimization/, gru/) or one level down in a sibling scripts/ folder.
         for candidate in (parent, parent / "scripts"):
             if (candidate / "optimization").exists() or (candidate / "gru").exists():
                 return candidate
@@ -138,9 +134,7 @@ def cache_path():
 
 
 def connect_cache(db_path=None):
-    """db_path overrides both DEEPVAC_VISUALIZATION_DB and CACHE_DB for
-    this call only -- see connect_auth()'s docstring for why the other
-    (module-level-constant) functions in this file don't take this too."""
+    """Opens the run cache database."""
     path = db_path or cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -192,16 +186,17 @@ def connect_cache(db_path=None):
     if "source" not in existing_columns:
         conn.execute("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'folder'")
     if "chamber" not in existing_columns:
-        # Nullable, no default: only source='monitoring' rows are ever
-        # tagged with the chamber that was connected when they were
-        # recorded (see save_monitoring_session()) -- folder/upload rows
-        # genuinely have no chamber of origin, not an unknown one.
         conn.execute("ALTER TABLE runs ADD COLUMN chamber TEXT")
     if "test_profile" not in existing_columns:
-        # Same idea as chamber: whichever Test Profile (services/
-        # test_profiles_service.py) was running when a monitoring session
-        # was saved, if any -- NULL for everything else.
         conn.execute("ALTER TABLE runs ADD COLUMN test_profile TEXT")
+    for column, column_type in (
+        ("run_uid", "TEXT"),
+        ("start_epoch", "REAL"),
+        ("end_epoch", "REAL"),
+        ("manifest_json", "TEXT"),
+    ):
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {column_type}")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('cache_version', ?)",
@@ -308,11 +303,6 @@ def sync_cache(progress=None):
             if index % 25 == 0:
                 conn.commit()
 
-        # Only prune stale *folder*-sourced runs; uploaded runs aren't backed
-        # by this scan root and must never be deleted by it. If the scan
-        # found zero source files, the run root is more likely
-        # unreachable/misconfigured than genuinely empty -- leave the
-        # existing cache alone instead of deleting everything.
         if active_keys:
             placeholders = ",".join("?" for _ in active_keys)
             conn.execute(
@@ -384,10 +374,7 @@ def _unique_upload_key(conn, run_name):
 
 
 def _iter_upload_sources(paths):
-    """Expand user-selected files/folders into individual run_samples.csv
-    locations. A folder is either a single run (contains run_samples.csv
-    directly) or a batch of runs (contains run subfolders, searched
-    recursively)."""
+    """Expands selected files and folders into run sample files."""
     found = []
     for raw in paths:
         p = Path(raw)
@@ -411,11 +398,7 @@ def _iter_upload_sources(paths):
 
 
 def upload_runs(paths, progress=None):
-    """Import one or more runs directly into the cache database from
-    arbitrary filesystem locations, independent of the configured
-    run-history folder. Accepts run folders (each holding run_samples.csv,
-    and optionally run_summary.csv / band_metrics.csv), parent folders
-    containing many such run folders, or individual run_samples.csv files."""
+    """Imports run files into the cache database."""
     sources = _iter_upload_sources(paths)
     if not sources:
         raise ValueError(_tr("No {0} files found in the selected item(s).").format(SAMPLES_FILE))
@@ -477,18 +460,8 @@ def upload_runs(paths, progress=None):
     return {"imported": imported, "runs": load_cached_runs()}
 
 
-def save_monitoring_session(name, samples, chamber=None, test_profile=None):
-    """Saves a buffered Live Monitoring session (a list[dict] of samples,
-    the same shape as one incoming TCP JSON line each -- see
-    tcp_client.ChamberConnection) directly into the run cache as a normal
-    run, with its own source='monitoring' tag (never pruned by sync_cache(),
-    same as source='upload' -- see its own comment in sync_cache()).
-    chamber: the name of whichever saved chamber (chambers_service) was
-    connected when this session was recorded, if any -- tags the row so
-    the Dashboard's Chamber filter has something real to filter on.
-    test_profile: the name of whichever Test Profile (test_profiles_service)
-    was running when this session was recorded, if any -- same idea, for
-    the Dashboard's Test Profile filter."""
+def save_monitoring_session(name, samples, chamber=None, test_profile=None, manifest=None):
+    """Saves a recorded chamber session as a run."""
     name = str(name).strip()
     if not name:
         raise ValueError(_tr("Run name cannot be empty."))
@@ -504,6 +477,17 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
     duration_s = (max(known_timestamps) - min(known_timestamps)) if known_timestamps else None
     start_time = format_ts(known_timestamps[0]) if known_timestamps else ""
     end_time = format_ts(known_timestamps[-1]) if known_timestamps else ""
+    start_epoch = min(known_timestamps) if known_timestamps else None
+    end_epoch = max(known_timestamps) if known_timestamps else None
+    kpis = _session_kpis(samples)
+    run_uid = None
+    if start_epoch is not None:
+        import hashlib
+
+        seed = f"{(chamber or '').strip().lower()}|{int(start_epoch)}|{int(end_epoch)}"
+        run_uid = hashlib.sha256(seed.encode()).hexdigest()[:32]
+    if manifest is not None:
+        manifest = {**manifest, "run_uid": run_uid, "name": name}
 
     conn = connect_cache()
     try:
@@ -515,9 +499,9 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
                 samples, duration_s, mae, cost, tail_mae, overshoot, settle_time_s,
                 start_time, end_time, columns_json, numeric_columns_json,
                 summary_json, bands_json, annotations_json, samples_json, source,
-                chamber, test_profile, cached_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?,
-                      'monitoring', ?, ?, datetime('now'))
+                chamber, test_profile, cached_at, run_uid, start_epoch, end_epoch, manifest_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      'monitoring', ?, ?, datetime('now'), ?, ?, ?, ?)
             """,
             (
                 key,
@@ -529,6 +513,11 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
                 0.0,
                 len(samples),
                 duration_s,
+                kpis.get("mae"),
+                kpis.get("cost"),
+                kpis.get("tail_mae"),
+                kpis.get("overshoot"),
+                kpis.get("settle_time_s"),
                 start_time,
                 end_time,
                 json.dumps(columns),
@@ -539,6 +528,10 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
                 json.dumps(samples),
                 chamber,
                 test_profile,
+                run_uid,
+                start_epoch,
+                end_epoch,
+                json.dumps(manifest, ensure_ascii=False) if manifest is not None else None,
             ),
         )
         conn.commit()
@@ -546,6 +539,31 @@ def save_monitoring_session(name, samples, chamber=None, test_profile=None):
         conn.close()
 
     return {"key": key, "id": name, "runs": load_cached_runs()}
+
+
+def _session_kpis(samples):
+    """Returns the headline KPIs of a saved session."""
+    try:
+        from app.core.analysis import analyse_experiment
+        from app.core.analysis.runsamples import experiment_input
+
+        analysis = analyse_experiment(experiment_input(samples))
+    except Exception:
+        return {}
+    if not analysis.has_control:
+        return {}
+    run = analysis.run
+
+    def finite(value):
+        return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+    return {
+        "mae": finite(run.overall.mae),
+        "cost": finite(run.cost),
+        "tail_mae": finite(run.overall.tail_mae),
+        "overshoot": finite(run.overshoot),
+        "settle_time_s": finite(run.settling_time_s),
+    }
 
 
 def rename_run(key, new_name):
@@ -563,6 +581,57 @@ def rename_run(key, new_name):
         conn.close()
 
     return {"key": key, "id": new_name}
+
+
+METADATA_FIELDS = ("dut", "dut_mass", "dut_density", "operator", "purpose", "tags", "notes")
+
+
+def clean_metadata(metadata):
+    """Normalises an experiment's metadata."""
+    out = {}
+    for name in METADATA_FIELDS:
+        value = (metadata or {}).get(name)
+        if name == "tags":
+            if isinstance(value, str):
+                value = [t.strip() for t in value.split(",")]
+            out[name] = [t for t in (value or []) if str(t).strip()]
+        elif name in ("dut_mass", "dut_density"):
+            out[name] = to_float(value)
+        else:
+            out[name] = str(value or "").strip()
+    return out
+
+
+def run_metadata(key):
+    """Returns a saved run's details."""
+    conn = connect_cache()
+    try:
+        row = conn.execute("SELECT manifest_json FROM runs WHERE key = ?", (key,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise RunNotFound(key)
+    manifest = json.loads(row[0]) if row[0] else {}
+    return clean_metadata(manifest.get("metadata"))
+
+
+def update_run_metadata(key, metadata):
+    """Saves a run's details."""
+    conn = connect_cache()
+    try:
+        row = conn.execute("SELECT manifest_json FROM runs WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            raise RunNotFound(key)
+        manifest = json.loads(row[0]) if row[0] else {}
+        manifest["metadata"] = clean_metadata(metadata)
+        conn.execute(
+            "UPDATE runs SET manifest_json = ? WHERE key = ?",
+            (json.dumps(manifest, ensure_ascii=False), key),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return manifest["metadata"]
 
 
 def cached_run_payload(run_id):
@@ -874,27 +943,23 @@ def bounded_float(payload, name, default, low, high):
 
 
 @lru_cache(maxsize=1)
-def load_gru_model():
+def load_twin_model():
     import torch
 
     from app.model.simulation import DEFAULT_CHECKPOINT, DEFAULT_FEATURE_NAMES, load_model
 
     device = torch.device("cpu")
     model, checkpoint = load_model(DEFAULT_CHECKPOINT, device)
-    # checkpoint is dict[str, object] (heterogeneous pickled contents), so
-    # .get() types as object here regardless of the fallback's type -- cast
-    # before the list()/int() coercion that already does the real
-    # (deliberately permissive) type-narrowing at runtime.
     feature_names = list(cast(list, checkpoint.get("feature_names", DEFAULT_FEATURE_NAMES)))
     window_steps = int(cast(int, checkpoint.get("window_steps", 60)))
     return model, checkpoint, feature_names, window_steps, device, str(DEFAULT_CHECKPOINT)
 
 
-def simulate_gru_run(payload):
+def simulate_twin_run(payload):
     kp = bounded_float(payload, "kp", 7.0, 1.0, 50.0)
     ki = bounded_float(payload, "ki", 700.0, 1.0, 1000.0)
     kd = bounded_float(payload, "kd", 10.0, 1.0, 20.0)
-    model, checkpoint, feature_names, window_steps, device, checkpoint_path = load_gru_model()
+    model, checkpoint, feature_names, window_steps, device, checkpoint_path = load_twin_model()
     from app.model.simulation import simulate_candidate
 
     args = make_sim_args(payload)

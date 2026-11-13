@@ -1,12 +1,4 @@
-"""Application-wide logging and a global exception hook.
-
-Anything that escapes the try/except blocks scattered through the UI code
-(a bug in a signal handler, a background QThread's own connected slot, etc.)
-would otherwise fall through to whatever Qt/Python does by default -- often
-just a console traceback the user never sees, or a silent crash. Installing
-this replaces that with: always logged to data/logs/app.log, and shown to
-the user in a dialog when a Qt application is running.
-"""
+"""Application-wide logging and a global exception hook."""
 
 import contextlib
 import logging
@@ -49,12 +41,7 @@ def setup_logging():
 
 
 def install_excepthook(show_dialog=True):
-    """Route uncaught exceptions to the log file and, if a QApplication is
-    running and show_dialog is True, a crash dialog. show_dialog=False is
-    for --smoke-test: a blocking QMessageBox.exec() with nothing to dismiss
-    it would hang the process forever instead of exiting automatically.
-    Safe to call more than once (later calls are a no-op, same as before --
-    show_dialog only takes effect on the first, installing call)."""
+    """Logs uncaught exceptions and optionally shows a crash dialog."""
     global _hook_installed
     if _hook_installed:
         return
@@ -81,11 +68,7 @@ def install_excepthook(show_dialog=True):
 
 
 def add_exception_listener(callback):
-    """Register callback(exc_type, exc_value, exc_tb), invoked whenever the
-    global excepthook fires (in addition to logging/the dialog). This is
-    what lets --smoke-test detect an exception raised inside a Qt signal/
-    slot callback during app.exec() -- those never propagate as a normal
-    Python exception to the calling frame the way a synchronous one would."""
+    """Registers a callback for uncaught exceptions."""
     _exception_listeners.append(callback)
 
 
@@ -114,5 +97,4 @@ def _show_crash_dialog(exc_type, exc_value, text):
         box.setStandardButtons(QMessageBox.Ok)
         box.exec()
     except Exception:
-        # The crash dialog itself must never be able to crash the app.
         pass

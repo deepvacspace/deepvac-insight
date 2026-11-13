@@ -1,17 +1,4 @@
-"""TCP client for a live chamber connection.
-
-Inbound wire protocol: newline-delimited JSON. Each line the server sends
-is one JSON object of variable readings, the same shape as a
-run_samples.csv row (temp, temp_ref, kp, ki, kd, temp_u, temp_u_p,
-temp_u_i, temp_u_d, ...).
-
-Outbound wire protocol (send_command(), used by Test Profiles --
-views/monitoring.py's step-sequencer): also newline-delimited JSON, one
-object per command, e.g. {"cmd": "set_point", "temperature": 60.0,
-"pressure": null, "step_index": 0, "step_label": "Ramp to 60C",
-"profile_name": "Soak Test A"}.
-
-"""
+"""TCP client for a live chamber connection."""
 
 import json
 
@@ -47,11 +34,7 @@ class ChamberConnection(QObject):
         return self._socket.state() == QAbstractSocket.ConnectedState
 
     def send_command(self, payload):
-        """Writes one JSON object + newline to the socket -- see this
-        module's docstring for the outbound protocol shape. Raises
-        RuntimeError rather than silently dropping the command if there's
-        no live connection, so a caller (the test-profile step-sequencer)
-        can't mistake a no-op for a sent command."""
+        """Sends a JSON command to the chamber."""
         if not self.is_connected():
             raise RuntimeError("Cannot send a command: chamber is not connected.")
         line = json.dumps(payload) + "\n"

@@ -1,5 +1,4 @@
-"""Quick check that the Phase 5 fixtures themselves behave before relying
-on them across the real UI test files."""
+"""Smoke tests of the UI fixtures."""
 
 import pytest
 from PySide6.QtCore import QSettings

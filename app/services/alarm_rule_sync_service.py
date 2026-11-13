@@ -1,7 +1,4 @@
-"""Syncs one chamber's alarm rules with Deepvac Hub: pushes local-only
-rules up, pulls hub-only rules down, and surfaces conflicts for rules that
-exist on both sides with different content. Requires the chamber itself to
-already be synced (see chamber_sync_service)."""
+"""Syncs a chamber's alarm rules with Deepvac Hub."""
 
 from __future__ import annotations
 
@@ -128,8 +125,7 @@ def sync(local_chamber):
 
 
 def resolve_conflict(conflict, keep, local_chamber):
-    """keep is "local" (push local content over hub's) or "hub" (overwrite
-    the local rule with hub's content)."""
+    """Resolves a sync conflict in favour of the local or hub rule."""
     if keep == "local":
         rule = dict(conflict.local, _hub_chamber_id=local_chamber["hub_id"])
         _replace_hub_rule(conflict.hub_id, rule)

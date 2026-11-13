@@ -1,6 +1,4 @@
-"""TestProfilesDialog — create/edit/delete multi-step test profiles
-(app/services/test_profiles_service.py) from the Controller page's Test
-Profiles picker."""
+"""Dialog to manage test profiles."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -29,7 +27,7 @@ class TestProfilesDialog(QDialog):
     def __init__(self, current_user=None, parent=None):
         super().__init__(parent)
         self.current_user = current_user or {"name": "Unknown"}
-        self.changed = False  # caller checks this to know whether to reload
+        self.changed = False
         self._editing_id = None
 
         self.setWindowTitle(self.tr("Manage Test Profiles"))
@@ -76,11 +74,6 @@ class TestProfilesDialog(QDialog):
 
         step_btn_row = QHBoxLayout()
         add_step_btn = QPushButton(self.tr("+ Add Step"))
-        # NOT add_step_btn.clicked.connect(self._add_step_row) -- QPushButton.
-        # clicked emits a `checked: bool` argument, which would land in
-        # _add_step_row's leading `temp=` parameter (Qt passes it
-        # positionally), setting every new row's Temp cell to the literal
-        # text "False" instead of leaving it blank.
         add_step_btn.clicked.connect(lambda: self._add_step_row())
         remove_step_btn = QPushButton(self.tr("Remove Step"))
         remove_step_btn.clicked.connect(self._remove_selected_step)
@@ -113,16 +106,7 @@ class TestProfilesDialog(QDialog):
         button_row.addWidget(close_btn)
         root.addLayout(button_row)
 
-    # ── steps table helpers ─────────────────────────────────────────────────
-
     def _step_cell_editor(self, placeholder, value):
-        # A real QLineEdit per cell (not a bare QTableWidgetItem) so it's
-        # visually obvious each cell is a text field to click into and
-        # type a number, not a static label -- see the dialog's own
-        # docstring/steps_hint for the bug this fixes. Keeps its frame
-        # (border) and a bit of extra height so it actually reads as an
-        # input box against the table's dark background, rather than
-        # blending into the cell and looking uneditable.
         ed = QLineEdit()
         ed.setPlaceholderText(placeholder)
         ed.setMinimumHeight(36)
@@ -194,8 +178,6 @@ class TestProfilesDialog(QDialog):
             )
         return steps
 
-    # ── profile list / form ──────────────────────────────────────────────────
-
     def _refresh_list(self):
         self._list.clear()
         for profile in profiles.list_profiles():
@@ -254,8 +236,6 @@ class TestProfilesDialog(QDialog):
             self._reset_form()
         self.changed = True
         self._refresh_list()
-
-    # ── hub sync ─────────────────────────────────────────────────────────────
 
     def _sync_with_hub(self):
         try:

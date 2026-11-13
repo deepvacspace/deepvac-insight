@@ -1,13 +1,4 @@
-"""Tests for app.services.chamber_session.ChamberSession's alarm evaluation
-state machine (_evaluate_alarms): deadband (hysteresis) and delay (debounce)
-behavior, and that trigger/clear transitions are persisted via
-alarms_service. Alarm rules are scoped per-chamber (alarms_service.py's
-chamber_id column) -- these tests use one fixed chamber throughout, so
-scoping itself isn't what's under test here.
-
-time.monotonic() is monkeypatched to a controllable fake clock so delay_s
-behavior can be tested deterministically without real sleeps.
-"""
+"""Tests of the chamber session alarm evaluation."""
 
 import pytest
 
@@ -26,9 +17,6 @@ def session(deepvac_data_dir, qapp, qtbot):
 
 @pytest.fixture
 def fake_clock(monkeypatch):
-    # ChamberSession._evaluate_alarms() does `import time` at module level
-    # in chamber_session.py -- patching the real time module's monotonic
-    # reaches it since it's the same process-wide singleton object.
     import time
 
     state = {"t": 0.0}
@@ -113,15 +101,15 @@ def test_delay_suppresses_trigger_until_elapsed(deepvac_data_dir, session, fake_
 
     fake_clock["t"] = 0.0
     session._evaluate_alarms({"temp": 85.0})
-    assert session.alarms[0]["_active"] is False  # condition just started
+    assert session.alarms[0]["_active"] is False
 
     fake_clock["t"] = 5.0
     session._evaluate_alarms({"temp": 85.0})
-    assert session.alarms[0]["_active"] is False  # delay not yet elapsed
+    assert session.alarms[0]["_active"] is False
 
     fake_clock["t"] = 10.0
     session._evaluate_alarms({"temp": 85.0})
-    assert session.alarms[0]["_active"] is True  # delay elapsed
+    assert session.alarms[0]["_active"] is True
     assert len(alarms_service.list_events()) == 1
 
 
@@ -132,9 +120,9 @@ def test_delay_resets_if_condition_stops_holding(deepvac_data_dir, session, fake
     fake_clock["t"] = 0.0
     session._evaluate_alarms({"temp": 85.0})
     fake_clock["t"] = 5.0
-    session._evaluate_alarms({"temp": 50.0})  # drops below threshold -- resets the timer
+    session._evaluate_alarms({"temp": 50.0})
     fake_clock["t"] = 8.0
-    session._evaluate_alarms({"temp": 85.0})  # condition restarts here, not at t=0
+    session._evaluate_alarms({"temp": 85.0})
 
     assert session.alarms[0]["_active"] is False
     assert alarms_service.list_events() == []
@@ -147,8 +135,6 @@ def test_deadband_prevents_premature_clear(deepvac_data_dir, session):
     session._evaluate_alarms({"temp": 85.0})
     assert session.alarms[0]["_active"] is True
 
-    # Value drops back below the raw threshold (80) but stays within the
-    # deadband zone (must go below 80 - 5 = 75 to actually clear).
     session._evaluate_alarms({"temp": 78.0})
     assert session.alarms[0]["_active"] is True
 
@@ -177,7 +163,7 @@ def test_non_numeric_sample_value_is_skipped_without_error(deepvac_data_dir, ses
     rule = _add_rule()
     session.alarms = [_rule(id=rule["id"])]
 
-    session._evaluate_alarms({"temp": None})  # must not raise
+    session._evaluate_alarms({"temp": None})
     assert session.alarms[0]["_active"] is False
 
 
@@ -193,7 +179,7 @@ def test_delete_alarm_removes_rule_from_persistence(deepvac_data_dir, session):
 
 def test_alarm_rules_are_scoped_per_chamber(deepvac_data_dir, session):
     other_chamber = {"id": 2, "name": "Chamber 2", "host": "127.0.0.1", "port": 5556}
-    _add_rule()  # belongs to _CHAMBER (id=1)
+    _add_rule()
     _add_rule(chamber_id=other_chamber["id"], chamber_name=other_chamber["name"], name="Other")
 
     assert len(alarms_service.list_rules(chamber_id=_CHAMBER["id"])) == 1

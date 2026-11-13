@@ -202,8 +202,8 @@
     <name>DeepVacDesktop</name>
     <message>
         <location filename="../../app/main_window.py" line="37" />
-        <source>DeepVac Dashboard</source>
-        <translation>Panel de DeepVac</translation>
+        <source>Deepvac Dashboard</source>
+        <translation>Panel de Deepvac</translation>
     </message>
     <message>
         <location filename="../../app/main_window.py" line="184" />
@@ -285,8 +285,8 @@
     </message>
     <message>
         <location filename="../../app/main_window.py" line="294" />
-        <source>The new language will take effect the next time you start DeepVac.</source>
-        <translation>El nuevo idioma tendrá efecto la próxima vez que inicies DeepVac.</translation>
+        <source>The new language will take effect the next time you start Deepvac.</source>
+        <translation>El nuevo idioma tendrá efecto la próxima vez que inicies Deepvac.</translation>
     </message>
     <message>
         <location filename="../../app/main_window.py" line="303" />
@@ -326,8 +326,8 @@
     <name>LoginWindow</name>
     <message>
         <location filename="../../app/login_window.py" line="17" />
-        <source>Sign in — DeepVac Insight</source>
-        <translation>Iniciar sesión — DeepVac Insight</translation>
+        <source>Sign in — Deepvac Insight</source>
+        <translation>Iniciar sesión — Deepvac Insight</translation>
     </message>
     <message>
         <location filename="../../app/login_window.py" line="37" />
@@ -1521,8 +1521,8 @@ los detalles del informe.</translation>
     </message>
     <message>
         <location filename="../../app/title_bar.py" line="38" />
-        <source>⌕   DeepVac Dashboard</source>
-        <translation>⌕   Panel de DeepVac</translation>
+        <source>⌕   Deepvac Dashboard</source>
+        <translation>⌕   Panel de Deepvac</translation>
     </message>
     <message>
         <location filename="../../app/title_bar.py" line="46" />
@@ -1551,8 +1551,8 @@ los detalles del informe.</translation>
     <name>main</name>
     <message>
         <location filename="../../app/app.py" line="81" />
-        <source>Starting DeepVac…</source>
-        <translation>Iniciando DeepVac…</translation>
+        <source>Starting Deepvac…</source>
+        <translation>Iniciando Deepvac…</translation>
     </message>
 </context>
 </TS>

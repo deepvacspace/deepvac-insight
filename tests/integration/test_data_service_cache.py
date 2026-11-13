@@ -1,13 +1,4 @@
-"""Integration tests for data_service.py's SQLite cache: sync_cache(),
-upload_runs(), rename_run(), cached_run_payload(), load_cached_runs().
-
-Every test gets its own fresh sqlite file under tmp_path (via
-deepvac_data_dir, which also isolates auth/annotations/backups) and its
-own fake "run history" folder (via fake_workspace, which points
-DEEPVAC_DATA_ROOT at a tmp_path directory instead of the real
-DEEPVAC_WORKSPACE_ROOT-discovered folder) -- never the real 52 MB
-deepvac_runs.sqlite3 or a real run-history folder.
-"""
+"""Tests of the run cache database."""
 
 import sqlite3
 import time
@@ -21,11 +12,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def fake_workspace(tmp_path, monkeypatch):
-    """Points data_service's source-of-truth discovery at an empty tmp_path
-    dir instead of whatever real deepvac/scripts/optimization folder this
-    machine happens to have. Run folders are created directly under this
-    (data_root()/runs_root() both fall back to using the root itself when
-    no run_history/ subfolder exists)."""
+    """Points run discovery at an empty directory."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("DEEPVAC_DATA_ROOT", str(workspace))
@@ -85,11 +72,11 @@ def test_sync_cache_hit_returns_equivalent_data_without_reparsing(deepvac_data_d
 
     data_service.cache_record_for = spy
     try:
-        result = data_service.sync_cache()  # source files unchanged -> cache hit
+        result = data_service.sync_cache()
     finally:
         data_service.cache_record_for = original
 
-    assert call_count["n"] == 0  # never re-parsed
+    assert call_count["n"] == 0
     assert len(result["runs"]) == 1
     assert result["runs"][0]["id"] == "run_a"
 
@@ -120,15 +107,11 @@ def test_sync_cache_invalidated_when_source_mtime_advances(deepvac_data_dir, fak
     finally:
         data_service.cache_record_for = original
 
-    assert call_count["n"] == 1  # re-parsed because the source changed
+    assert call_count["n"] == 1
     assert result["runs"][0]["samples"] == 3
 
 
 def test_sync_cache_prunes_folder_run_whose_source_was_deleted(deepvac_data_dir, fake_workspace):
-    # A second run must survive so active_keys is non-empty -- an *empty*
-    # active_keys short-circuits the prune entirely (see the zero-source-
-    # files safety test below), which would make this test pass for the
-    # wrong reason.
     run_dir = _write_run(fake_workspace, "run_a", rows=5)
     _write_run(fake_workspace, "run_b", rows=3)
     data_service.sync_cache()
@@ -147,8 +130,6 @@ def test_sync_cache_never_prunes_upload_sourced_rows(deepvac_data_dir, fake_work
     data_service.upload_runs([str(upload_source)])
     assert len(data_service.load_cached_runs()) == 1
 
-    # An empty folder workspace (no folder-sourced runs at all) must not
-    # touch the upload -- sync_cache() only ever prunes source='folder' rows.
     result = data_service.sync_cache()
     assert len(result["runs"]) == 1
     assert result["runs"][0]["source"] == "upload"
@@ -159,15 +140,12 @@ def test_sync_cache_zero_source_files_leaves_existing_cache_alone(deepvac_data_d
     data_service.sync_cache()
     assert len(data_service.load_cached_runs()) == 1
 
-    # Simulate the workspace becoming unreachable/misconfigured (e.g. a
-    # transient mount issue) rather than genuinely emptied -- the documented
-    # safety behavior is to leave the cache alone, not wipe it.
     import shutil
 
     shutil.rmtree(run_dir)
-    (fake_workspace / "run_a").mkdir()  # dir exists, but samples file is gone -> zero sources found
+    (fake_workspace / "run_a").mkdir()
     result = data_service.sync_cache()
-    assert len(result["runs"]) == 1  # NOT wiped
+    assert len(result["runs"]) == 1
 
 
 def test_upload_runs_duplicate_target_name_gets_suffixed_key(deepvac_data_dir, tmp_path):
@@ -176,7 +154,6 @@ def test_upload_runs_duplicate_target_name_gets_suffixed_key(deepvac_data_dir, t
     result_a = data_service.upload_runs([str(source_a)])
     key_a = result_a["imported"][0]["key"]
 
-    # Re-upload a *different* folder that happens to share the same leaf name.
     other_root = tmp_path / "other_location"
     other_root.mkdir()
     source_b = _write_run(other_root, "same_name", rows=3)
@@ -211,8 +188,8 @@ def test_rename_run_updates_display_id_not_key(deepvac_data_dir, fake_workspace)
     key = data_service.load_cached_runs()[0]["key"]
 
     result = data_service.rename_run(key, "  My Renamed Run  ")
-    assert result["id"] == "My Renamed Run"  # stripped
-    assert result["key"] == key  # lookup key untouched
+    assert result["id"] == "My Renamed Run"
+    assert result["key"] == key
 
     runs = data_service.load_cached_runs()
     assert runs[0]["key"] == key
@@ -303,10 +280,6 @@ def test_two_connections_can_both_read_after_a_commit(deepvac_data_dir, fake_wor
 
 
 def test_corrupt_cache_file_raises_recoverable_sqlite_error(deepvac_data_dir):
-    # Characterizes current behavior: connect_cache() doesn't special-case
-    # a corrupt file -- sqlite3 itself raises DatabaseError trying to read
-    # it, which is a normal Python exception a caller can catch, not a
-    # silent hang or a crash that takes down the whole process.
     data_service.CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
     data_service.CACHE_DB.write_bytes(b"this is not a sqlite database")
     with pytest.raises(sqlite3.DatabaseError):
@@ -373,17 +346,12 @@ def test_folder_sourced_runs_have_no_chamber_or_test_profile(deepvac_data_dir, f
 def test_save_monitoring_session_is_never_pruned_by_sync_cache(deepvac_data_dir, fake_workspace):
     samples = [{"timestamp": "1700000000", "temp": "20.0"}]
     data_service.save_monitoring_session("live-test", samples)
-    # An empty folder workspace must not prune the monitoring-sourced row,
-    # same guarantee as source='upload' (see the never-prunes-uploads test above).
     result = data_service.sync_cache()
     assert len(result["runs"]) == 1
     assert result["runs"][0]["source"] == "monitoring"
 
 
 def test_schema_migration_adds_source_column_to_pre_existing_table(deepvac_data_dir):
-    # Characterizes the in-place ALTER TABLE migration: a "runs" table
-    # created without the `source` column (as an older cache file would
-    # have) gets it added on the next connect_cache(), defaulted to 'folder'.
     data_service.CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(data_service.CACHE_DB)
     conn.execute(

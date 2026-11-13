@@ -1,20 +1,6 @@
-"""Test Profiles -- reusable, named multi-step experiment definitions (a
-sequence of temperature/pressure setpoints, each held for a duration), in
-their own local SQLite database.
+"""Saved multi-step test profiles."""
 
-Replaces the "Recipe" concept the Dashboard's filter row used to have a
-placeholder for: unlike a recipe (never modeled anywhere else in this
-app), a test profile is a real, editable schedule you can create here and
-then run against a connected chamber from Live Monitoring (see
-views/monitoring.py's step-sequencer, which sends each step's setpoint via
-services/tcp_client.ChamberConnection.send_command() as its turn comes up).
-
-Two tables: test_profiles (name, description) and test_profile_steps (one
-row per ordered step: setpoint_temp and/or setpoint_pressure, duration_s,
-an optional label) -- a step needs at least one setpoint set; a step with
-neither would just be "wait", which isn't useful on its own here.
-"""
-
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -39,9 +25,7 @@ def _ensure_hub_sync_columns(conn):
 
 
 def connect_test_profiles(db_path=None):
-    """db_path overrides TEST_PROFILES_DB for this call only -- see
-    auth_service.connect_auth()'s docstring for why the other functions in
-    this file use the module-level constant implicitly instead."""
+    """Opens the test profiles database."""
     path = db_path or TEST_PROFILES_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -62,6 +46,9 @@ def connect_test_profiles(db_path=None):
         """
     )
     _ensure_hub_sync_columns(conn)
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(test_profiles)")}
+    if "program_json" not in existing:
+        conn.execute("ALTER TABLE test_profiles ADD COLUMN program_json TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS test_profile_steps (
@@ -111,6 +98,7 @@ def _profile_row(conn, row):
         "created_at": row["created_at"],
         "hub_id": row["hub_id"],
         "hub_synced_at": row["hub_synced_at"],
+        "program": json.loads(row["program_json"]) if row["program_json"] else None,
         "steps": [_step_row(s) for s in steps],
     }
 
@@ -175,14 +163,15 @@ def _insert_steps(conn, profile_id, steps):
         )
 
 
-def add_profile(name, description, steps, created_by="Unknown", hub_id=None):
+def add_profile(name, description, steps, created_by="Unknown", hub_id=None, program=None):
+    """Adds a test profile."""
     _validate(name, steps)
     conn = connect_test_profiles()
     try:
         try:
             cur = conn.execute(
-                "INSERT INTO test_profiles (name, description, created_by, created_at, hub_id, hub_synced_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO test_profiles (name, description, created_by, created_at, hub_id, "
+                "hub_synced_at, program_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     name.strip(),
                     description or "",
@@ -190,6 +179,7 @@ def add_profile(name, description, steps, created_by="Unknown", hub_id=None):
                     _now(),
                     hub_id,
                     _now() if hub_id else None,
+                    json.dumps(program) if program else None,
                 ),
             )
         except sqlite3.IntegrityError as exc:
@@ -198,6 +188,17 @@ def add_profile(name, description, steps, created_by="Unknown", hub_id=None):
         _insert_steps(conn, profile_id, steps)
         conn.commit()
         return get_profile(profile_id)
+    finally:
+        conn.close()
+
+
+def find_by_name(name):
+    conn = connect_test_profiles()
+    try:
+        row = conn.execute(
+            "SELECT * FROM test_profiles WHERE name = ?", ((name or "").strip(),)
+        ).fetchone()
+        return _profile_row(conn, row) if row else None
     finally:
         conn.close()
 
@@ -224,21 +225,34 @@ def mark_hub_synced(profile_id, hub_id):
         conn.close()
 
 
-def update_profile(profile_id, name, description, steps):
+_KEEP = object()
+
+
+def update_profile(profile_id, name, description, steps, program=_KEEP):
+    """Updates a test profile."""
     _validate(name, steps)
     conn = connect_test_profiles()
     try:
         try:
-            cur = conn.execute(
-                "UPDATE test_profiles SET name = ?, description = ? WHERE id = ?",
-                (name.strip(), description or "", profile_id),
-            )
+            if program is _KEEP:
+                cur = conn.execute(
+                    "UPDATE test_profiles SET name = ?, description = ? WHERE id = ?",
+                    (name.strip(), description or "", profile_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE test_profiles SET name = ?, description = ?, program_json = ? "
+                    "WHERE id = ?",
+                    (
+                        name.strip(),
+                        description or "",
+                        json.dumps(program) if program else None,
+                        profile_id,
+                    ),
+                )
         except sqlite3.IntegrityError as exc:
             raise TestProfileError(f"A test profile named '{name}' already exists.") from exc
         if cur.rowcount == 0:
-            # Check before _insert_steps() below would otherwise fail with a
-            # raw, less helpful sqlite3.IntegrityError (FK violation) for
-            # the same underlying reason -- no such profile to attach to.
             raise TestProfileError("Test profile not found.")
         conn.execute("DELETE FROM test_profile_steps WHERE profile_id = ?", (profile_id,))
         _insert_steps(conn, profile_id, steps)

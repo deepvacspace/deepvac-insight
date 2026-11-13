@@ -1,8 +1,4 @@
-"""Tests for data_service.py's CSV parsing and pure-transform functions:
-csv_dicts, to_float, first_float, format_ts, numeric_columns, run_record,
-elapsed_x, run_annotations, downsample. None of these touch sqlite or
-DATA_DIR -- see tests/integration/test_data_service_cache.py for the
-cache-backed functions."""
+"""Tests of CSV parsing and data transforms."""
 
 from pathlib import Path
 
@@ -13,9 +9,6 @@ from app.services import data_service
 pytestmark = pytest.mark.unit
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures/runs"
-
-
-# ── to_float / first_float ──────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -52,13 +45,10 @@ def test_first_float_returns_none_when_nothing_parses():
     assert data_service.first_float(row, ["a", "b", "missing"]) is None
 
 
-# ── format_ts ────────────────────────────────────────────────────────────
-
-
 def test_format_ts_epoch_seconds():
     formatted = data_service.format_ts(1700000000)
     assert formatted.endswith("UTC")
-    assert "2023-11-14" in formatted  # 1700000000 UTC
+    assert "2023-11-14" in formatted
 
 
 def test_format_ts_passthrough_for_non_numeric():
@@ -68,9 +58,6 @@ def test_format_ts_passthrough_for_non_numeric():
 def test_format_ts_empty_value():
     assert data_service.format_ts(None) == ""
     assert data_service.format_ts("") == ""
-
-
-# ── csv_dicts ────────────────────────────────────────────────────────────
 
 
 def test_csv_dicts_valid_realistic_file():
@@ -111,9 +98,6 @@ def test_csv_dicts_header_only_file(tmp_path):
 
 
 def test_csv_dicts_missing_column_leaves_it_absent_per_row(tmp_path):
-    # csv.DictReader doesn't backfill missing trailing columns with None
-    # unless the row is short -- a genuinely absent column in the header
-    # just never appears as a key at all.
     path = tmp_path / "no_temp_ref.csv"
     path.write_text("run_id,timestamp,temp\nr1,1700000000,20.0\n", encoding="utf-8")
     rows = data_service.csv_dicts(path)
@@ -128,8 +112,6 @@ def test_csv_dicts_short_row_gets_none_for_missing_trailing_fields(tmp_path):
 
 
 def test_csv_dicts_unexpected_extra_column_is_grouped_under_none_key(tmp_path):
-    # csv.DictReader's documented behavior for a row with more fields than
-    # the header: the extras land in a list under the None key.
     path = tmp_path / "extra_column.csv"
     path.write_text("run_id,temp\nr1,20.0,unexpected_extra\n", encoding="utf-8")
     rows = data_service.csv_dicts(path)
@@ -170,8 +152,6 @@ def test_csv_dicts_path_containing_spaces(tmp_path):
 
 
 def test_csv_dicts_duplicate_samples_are_kept_as_separate_rows(tmp_path):
-    # Current behavior: csv_dicts() does no deduplication -- every row in
-    # the file becomes an entry, identical or not.
     path = tmp_path / "dupes.csv"
     path.write_text("run_id,timestamp,temp\nr1,100,20.0\nr1,100,20.0\n", encoding="utf-8")
     rows = data_service.csv_dicts(path)
@@ -183,7 +163,7 @@ def test_csv_dicts_bom_is_stripped_by_utf_8_sig_encoding(tmp_path):
     path = tmp_path / "with_bom.csv"
     path.write_bytes("run_id,temp\r\nr1,20.0\r\n".encode("utf-8-sig"))
     rows = data_service.csv_dicts(path)
-    assert list(rows[0].keys())[0] == "run_id"  # not "﻿run_id"
+    assert list(rows[0].keys())[0] == "run_id"
 
 
 def test_csv_dicts_large_synthetic_file_parses_fully(tmp_path):
@@ -195,9 +175,6 @@ def test_csv_dicts_large_synthetic_file_parses_fully(tmp_path):
     rows = data_service.csv_dicts(path)
     assert len(rows) == 5000
     assert rows[-1]["timestamp"] == str(1700000000 + 4999 * 2)
-
-
-# ── numeric_columns ────────────────────────────────────────────────────
 
 
 def test_numeric_columns_excludes_run_id_timestamp_start_temp():
@@ -222,9 +199,6 @@ def test_numeric_columns_all_non_numeric_column_excluded():
     assert data_service.numeric_columns(rows) == []
 
 
-# ── run_record ───────────────────────────────────────────────────────────
-
-
 def test_run_record_reads_summary_fields():
     samples_path = FIXTURES / "valid_run" / "run_samples.csv"
     record = data_service.run_record(samples_path, key="valid_run", group="fixtures")
@@ -246,10 +220,7 @@ def test_run_record_falls_back_to_counting_rows_when_summary_lacks_num_samples(t
         "run_id,temp\nr1,20.0\nr1,21.0\nr1,22.0\n", encoding="utf-8"
     )
     record = data_service.run_record(run_dir / "run_samples.csv", key="k", group="g")
-    assert record["samples"] == 3  # 3 data rows, header not counted
-
-
-# ── elapsed_x ────────────────────────────────────────────────────────────
+    assert record["samples"] == 3
 
 
 def test_elapsed_x_relative_to_first_timestamp():
@@ -264,9 +235,6 @@ def test_elapsed_x_falls_back_to_index_when_no_timestamps():
 
 def test_elapsed_x_empty_rows():
     assert data_service.elapsed_x([]) == []
-
-
-# ── run_annotations ──────────────────────────────────────────────────────
 
 
 def test_run_annotations_includes_start_and_target():
@@ -307,10 +275,7 @@ def test_run_annotations_invalid_region_open_at_end_of_samples():
     annotations = data_service.run_annotations(samples, {}, [])
     invalid_regions = [a for a in annotations if a["kind"] == "invalid"]
     assert len(invalid_regions) == 1
-    assert invalid_regions[0]["x1"] == pytest.approx(2.0)  # closed at the last sample
-
-
-# ── downsample ───────────────────────────────────────────────────────────
+    assert invalid_regions[0]["x1"] == pytest.approx(2.0)
 
 
 def test_downsample_below_threshold_is_unchanged():
@@ -322,7 +287,7 @@ def test_downsample_above_threshold_reduces_row_count():
     rows = list(range(5000))
     result = data_service.downsample(rows, max_points=1000)
     assert len(result) <= 1000
-    assert result[0] == 0  # first row always kept
+    assert result[0] == 0
 
 
 def test_downsample_preserves_order():

@@ -1,6 +1,4 @@
-"""Integration tests for app/services/alarms_service.py -- persistent alarm
-rules and alarm event history (trigger/clear/acknowledge/export), all backed
-by their own isolated sqlite file (deepvac_data_dir)."""
+"""Tests of alarm rules and alarm history."""
 
 import csv
 
@@ -37,7 +35,6 @@ def test_delete_rule(deepvac_data_dir):
 
 
 def test_rules_survive_a_fresh_connection(deepvac_data_dir):
-    # Simulates a restart: nothing but the sqlite file on disk persists.
     alarms.add_rule("High Temp", "temp", "above", 80.0, None, "Critical")
     rules_again = alarms.list_rules()
     assert len(rules_again) == 1
@@ -73,7 +70,7 @@ def test_record_clear_does_not_overwrite_an_existing_cleared_at(deepvac_data_dir
 
 
 def test_record_clear_with_none_event_id_is_a_noop(deepvac_data_dir):
-    alarms.record_clear(None)  # must not raise
+    alarms.record_clear(None)
 
 
 def test_acknowledge_event(deepvac_data_dir):

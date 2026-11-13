@@ -1,21 +1,4 @@
-"""ChamberSession -- one live chamber connection plus everything that used
-to be scattered across DeepVacDesktop/mixin instance attributes for it:
-sample buffering, reconnect bookkeeping, this chamber's alarm rules and
-their runtime evaluation state, and the manual-setpoint/test-profile
-step-sequencer.
-
-The app supports up to five of these connected at once (see
-main_window.py's _connect_chamber()/_chamber_sessions), one per tab in
-Live Monitoring. Each session owns its own QTimers so a running manual
-setpoint or test profile keeps advancing even while the Controller page
-has a *different* chamber selected -- "independent per chamber" means the
-sequencing state lives here, not on whatever widget happens to be visible.
-
-app/services/tcp_client.ChamberConnection itself is unchanged -- it was
-already a clean per-connection socket wrapper; this just gives each
-instance of it a home with the bookkeeping that used to assume there was
-only ever one.
-"""
+"""One live chamber connection with its samples, reconnection and alarms."""
 
 import time
 from datetime import datetime, timezone
@@ -25,14 +8,9 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from app.services import alarms_service
 from app.services.tcp_client import ChamberConnection
 
-# Reconnect attempts after a connection drop the user didn't request
-# themselves, with linear backoff -- moved as-is from the old
-# views/monitoring.py module constants.
 _RECONNECT_MAX_ATTEMPTS = 5
 _RECONNECT_DELAY_MS = 3000
 
-# How many chambers can have an open Live Monitoring tab (and therefore a
-# ChamberSession) at once -- enforced by main_window.py's _connect_chamber().
 MAX_CONNECTED_CHAMBERS = 5
 
 
@@ -40,8 +18,8 @@ class ChamberSession(QObject):
     connected = Signal()
     disconnected = Signal()
     connection_error = Signal(str)
-    sample_received = Signal(dict)  # re-emitted after buffering + alarm eval
-    reconnecting = Signal(int, int)  # attempt, max_attempts
+    sample_received = Signal(dict)
+    reconnecting = Signal(int, int)
     reconnect_failed = Signal()
     alarms_changed = Signal()
     manual_state_changed = Signal()
@@ -49,17 +27,18 @@ class ChamberSession(QObject):
 
     def __init__(self, chamber: dict, parent=None):
         super().__init__(parent)
-        self.chamber = chamber  # {id, name, host, port}
+        self.chamber = chamber
         self.tcp = ChamberConnection(self)
 
-        self.mon_buffer = []  # every sample this session -- see clear_buffer()/Save as Run
+        self.mon_buffer = []
         self.last_seen = None
         self.user_disconnected = False
         self.reconnect_attempts = 0
         self._reconnect_timer = None
+        self.connection_note = ""
 
-        self.alarms = []  # this chamber's rules, each with runtime-only _active/etc keys
-        self.session_test_profile_name = None  # last test profile run this session, if any
+        self.alarms = []
+        self.session_test_profile_name = None
 
         self.manual_running = False
         self.manual_started_at = None
@@ -83,23 +62,19 @@ class ChamberSession(QObject):
 
         self._load_alarm_rules()
 
-    # ── Connection lifecycle ─────────────────────────────────────────────────
-
     def connect(self):
         self.user_disconnected = False
         self.reconnect_attempts = 0
         self.tcp.connect_to_host(self.chamber["host"], self.chamber["port"])
 
     def disconnect(self):
-        self.user_disconnected = True  # don't auto-reconnect after this
+        self.user_disconnected = True
         if self._reconnect_timer is not None:
             self._reconnect_timer.stop()
         self.tcp.disconnect_from_host()
 
     def teardown(self):
-        """Called when this session is being permanently removed (its tab
-        closed) -- stops every timer and the socket without scheduling a
-        reconnect. Safe to call regardless of connection state."""
+        """Stops the session for good."""
         self.user_disconnected = True
         if self._reconnect_timer is not None:
             self._reconnect_timer.stop()
@@ -117,6 +92,7 @@ class ChamberSession(QObject):
 
     def _on_connected(self):
         self.reconnect_attempts = 0
+        self.connection_note = ""
         self.connected.emit()
 
     def _on_disconnected(self):
@@ -131,15 +107,20 @@ class ChamberSession(QObject):
         self._maybe_schedule_reconnect()
 
     def _on_error(self, msg):
+        self.connection_note = msg
         self.connection_error.emit(msg)
 
     def _maybe_schedule_reconnect(self):
         if self.user_disconnected:
             return
         if self.reconnect_attempts >= _RECONNECT_MAX_ATTEMPTS:
+            self.connection_note = "reconnect failed"
             self.reconnect_failed.emit()
             return
         self.reconnect_attempts += 1
+        self.connection_note = (
+            f"connection lost, reconnecting ({self.reconnect_attempts}/{_RECONNECT_MAX_ATTEMPTS})"
+        )
         self.reconnecting.emit(self.reconnect_attempts, _RECONNECT_MAX_ATTEMPTS)
         self._reconnect_timer = QTimer(self)
         self._reconnect_timer.setSingleShot(True)
@@ -148,10 +129,11 @@ class ChamberSession(QObject):
         )
         self._reconnect_timer.start(_RECONNECT_DELAY_MS * self.reconnect_attempts)
 
-    # ── Samples ──────────────────────────────────────────────────────────────
-
     def _on_sample(self, sample):
         self.last_seen = datetime.now(timezone.utc)
+        timestamp = sample.get("timestamp")
+        if not isinstance(timestamp, (int, float)) or isinstance(timestamp, bool):
+            sample["timestamp"] = self.last_seen.timestamp()
         self.mon_buffer.append(sample)
         self._evaluate_alarms(sample)
         self.sample_received.emit(sample)
@@ -159,8 +141,6 @@ class ChamberSession(QObject):
     def clear_buffer(self):
         self.mon_buffer = []
         self.session_test_profile_name = None
-
-    # ── Alarms (per-chamber) ─────────────────────────────────────────────────
 
     def _load_alarm_rules(self):
         try:
@@ -262,8 +242,6 @@ class ChamberSession(QObject):
         if changed:
             self.alarms_changed.emit()
 
-    # ── Manual setpoint ──────────────────────────────────────────────────────
-
     def start_manual_setpoint(self, temp, pressure):
         if not self.is_connected():
             raise RuntimeError("Connect to a chamber first.")
@@ -300,8 +278,6 @@ class ChamberSession(QObject):
         self.last_manual_stop_error = error
         self.last_manual_elapsed_s = elapsed
         self.manual_state_changed.emit()
-
-    # ── Test profiles ────────────────────────────────────────────────────────
 
     def start_test(self, profile):
         if not self.is_connected():

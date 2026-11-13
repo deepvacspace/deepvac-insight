@@ -1,5 +1,4 @@
-"""Client side of the local-network collaboration: pairing with a host and
-making signed requests to it over a pinned TLS connection."""
+"""Collaboration client: pairing and signed requests to a host."""
 
 from base64 import urlsafe_b64encode
 from urllib.parse import urlparse

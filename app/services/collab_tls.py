@@ -1,5 +1,4 @@
-"""TLS identity for the collaboration host: a self-signed certificate that
-peers pin when they pair."""
+"""TLS identity of the collaboration host."""
 
 import contextlib
 import datetime
@@ -22,7 +21,7 @@ _FETCH_TIMEOUT_S = 5
 
 
 def load_or_create_host_identity():
-    """Returns (cert_path, key_path), creating a self-signed certificate on first use."""
+    """Returns the host's certificate and key, creating them if needed."""
     cert_path = HOST_TLS_DIR / _CERT_NAME
     key_path = HOST_TLS_DIR / _KEY_NAME
     if cert_path.exists() and key_path.exists():

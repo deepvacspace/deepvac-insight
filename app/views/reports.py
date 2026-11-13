@@ -1,4 +1,4 @@
-"""ReportsMixin — builds the Reports page and handles report generation."""
+"""Reports page."""
 
 from datetime import datetime
 
@@ -60,8 +60,6 @@ class ReportsMixin:
         filter_lbl.setObjectName("sectionLabel")
         top_row.addWidget(filter_lbl)
         self._report_status_filter = QComboBox()
-        # Display text is translated; userData stays a stable English key so
-        # filter logic below never has to compare against translated text.
         self._report_status_filter.addItem(self.tr("All"), "All")
         self._report_status_filter.addItem(self.tr("Ready"), "Ready")
         self._report_status_filter.addItem(self.tr("Missing"), "Missing")

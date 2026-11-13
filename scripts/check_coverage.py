@@ -1,16 +1,4 @@
-"""Checks coverage.json (produced by `pytest --cov=app --cov-report=json`)
-against a small set of per-file and whole-project line-coverage floors.
-
-Deliberately not a single global threshold: app/model/simulation.py and
-(from Phase 4 on) app/services/data_service.py are the two modules where a
-silent regression would be hardest to notice by eye, so they get a much
-higher bar than the project as a whole -- most of the codebase is PySide6
-UI code covered by Phase 5's smoke tests, not exhaustively unit tested.
-
-Usage:
-    uv run pytest --cov=app --cov-branch --cov-report=json
-    uv run python scripts/check_coverage.py
-"""
+"""Checks test coverage against per-file and project floors."""
 
 import json
 import sys
@@ -18,7 +6,6 @@ from pathlib import Path
 
 COVERAGE_JSON = Path(__file__).resolve().parent.parent / "coverage.json"
 
-# path (relative to repo root, forward slashes) -> minimum % line coverage.
 PER_FILE_THRESHOLDS = {
     "app/model/simulation.py": 85.0,
     "app/services/data_service.py": 65.0,
@@ -39,9 +26,6 @@ def main():
     failures = []
 
     for rel_path, threshold in PER_FILE_THRESHOLDS.items():
-        # coverage.py's JSON report keys files by the path it discovered
-        # them at, which may use OS-native separators -- normalize both
-        # sides to forward slashes before matching.
         match = next(
             (f for p, f in data["files"].items() if p.replace("\\", "/") == rel_path), None
         )
