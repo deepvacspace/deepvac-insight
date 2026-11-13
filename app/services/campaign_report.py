@@ -1,6 +1,6 @@
-"""As-run report of a test campaign: markdown and PDF with plateau results,
-deviations, hold-point decisions, a temperature chart and the signed log hash."""
+"""As-run report of a test campaign, in markdown and PDF."""
 
+import json
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -61,6 +61,17 @@ def template_summary(campaign):
     spec = campaign["spec"]
     results = campaign["results"] or []
     cycles_done = sum(1 for r in results if r["plateau"] == "cold")
+    if spec.get("test_type") == cs.RAMP:
+        text = f"The {spec['article']} was taken through a {cs.spec_line(spec)}" + (
+            " before the campaign was aborted. " if campaign["state"] == cs.ABORTED else ". "
+        )
+        deviations = campaign["deviations"] or []
+        text += (
+            f"{len(deviations)} deviation(s) were recorded. "
+            if deviations
+            else "No deviations were recorded. "
+        )
+        return text + "Review the plateau result and the decisions below before signing."
     text = (
         f"The {spec['article']} completed {cycles_done} of {spec['cycles']} planned thermal cycles between "
         f"{cs.deg(spec['cold_c'])} and {cs.deg(spec['hot_c'])}"
@@ -117,7 +128,7 @@ def markdown(campaign, ev):
     spec = campaign["spec"]
     lines = ["# Thermal test campaign report (as-run)", ""]
     lines.append(
-        f"Campaign {campaign['id']} on {campaign['chamber_name']}, DeepVac Insight. "
+        f"Campaign {campaign['id']} on {campaign['chamber_name']}, Deepvac Insight. "
         + (
             "**Rehearsal: shortened values, not a qualification record.** "
             if spec["rehearsal"]
@@ -157,7 +168,7 @@ def markdown(campaign, ev):
         + (f" Decision: {d['decision']}." if d.get("decision") else "")
         for d in deviations
     ] or ["- None recorded."]
-    lines += ["", "## Operator decisions at hold points", ""]
+    lines += ["", "## Operator decisions", ""]
     lines += [
         f"- {local_time(d['time'])}, {d['hold']} **{d['choice']}** by {d['by']}"
         + (f" ({d['comment']})" if d["comment"] else "")
@@ -190,7 +201,7 @@ def markdown(campaign, ev):
 
 
 def chart(campaign):
-    """Temperature and setpoint chart with dwells shaded; None without a trace."""
+    """Renders the campaign's temperature chart."""
     points = cs.trace(campaign["id"])
     if len(points) < 2:
         return None
@@ -230,7 +241,7 @@ def html(campaign, ev, with_chart):
     parts = [
         "<html><body style='font-family: Segoe UI, Arial; font-size: 9pt'>",
         "<h1>Thermal test campaign report (as-run)</h1>",
-        f"<p>Campaign {campaign['id']} on {escape(campaign['chamber_name'])}, DeepVac Insight. "
+        f"<p>Campaign {campaign['id']} on {escape(campaign['chamber_name'])}, Deepvac Insight. "
         + (
             "<b>Rehearsal: shortened values, not a qualification record.</b> "
             if spec["rehearsal"]
@@ -268,10 +279,10 @@ def html(campaign, ev, with_chart):
         else "<p>None recorded.</p>"
     )
     decisions = cs.decisions(campaign["id"])
-    parts.append("<h2>Operator decisions at hold points</h2>")
+    parts.append("<h2>Operator decisions</h2>")
     parts.append(
         _table(
-            ("Time", "Hold point", "Choice", "By", "Recommended"),
+            ("Time", "Decision point", "Choice", "By", "Recommended"),
             [
                 (
                     local_time(d["time"]),
@@ -333,7 +344,7 @@ def _paths(campaign):
 
 
 def write(campaign):
-    """Writes the report files of an ended campaign; returns their paths and links."""
+    """Writes the report files of an ended campaign."""
     ev = evidence(campaign)
     pdf_path, md_path = _paths(campaign)
     md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,7 +365,7 @@ def write(campaign):
             )
         )
         writer.setTitle(f"Campaign {campaign['id']}: {campaign['title']}")
-        writer.setCreator("DeepVac Insight")
+        writer.setCreator("Deepvac Insight")
         document.print_(writer)
         del writer
     if not pdf_path.exists() or pdf_path.stat().st_size == 0:
@@ -411,3 +422,34 @@ def sign_off(campaign_id, user_name):
     files = write(cs.require(campaign_id))
     cs.update(campaign_id, report_files=files)
     return files
+
+
+LOCAL_PROMPT = """You write the summary of a thermal vacuum test campaign's as-run report.
+Use only the facts below. Two to four sentences, plain and factual: what was tested, whether
+every plateau held, the deviations and what the operator decided, any blocked commands. Quote
+the numbers. No headings, no lists.
+
+Facts (JSON): {facts}"""
+
+
+def local_summary(campaign):
+    """Returns the local model's report summary, or None."""
+    from app.services import local_llm
+
+    prompt = LOCAL_PROMPT.format(facts=json.dumps(facts(campaign), ensure_ascii=False, default=str))
+    try:
+        text = local_llm.chat([{"role": "user", "content": prompt}], max_tokens=260, timeout=90)
+    except local_llm.LocalModelError:
+        return None
+    return text.strip() or None
+
+
+def issue_with_ai(campaign_id, by="Reporter"):
+    """Issues the report with an AI-written or template summary."""
+    from app.services import ai_mode
+
+    summary, writer = "", by
+    if ai_mode.is_offline():
+        summary = local_summary(cs.require(campaign_id)) or ""
+        writer = "Reporter (local model)" if summary else by
+    return issue(campaign_id, summary, by=writer)

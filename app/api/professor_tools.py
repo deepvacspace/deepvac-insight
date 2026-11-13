@@ -1,4 +1,4 @@
-"""Professor tools: draft, submit, follow, recommend on and report test campaigns."""
+"""Professor tools for test campaigns."""
 
 import time
 
@@ -44,6 +44,8 @@ class ProfessorTools:
         dwell_min: float | None = None,
         ramp_c_per_min: float | None = None,
         reason: str = "",
+        test_type: str = "cycling",
+        direction: str = "up",
     ) -> dict:
         ch = self.links.resolve(chamber)
         if ch["protocol"] != "plc":
@@ -59,6 +61,8 @@ class ProfessorTools:
                 "level": level,
                 "rehearsal": rehearsal,
                 "notes": notes,
+                "test_type": test_type,
+                "direction": direction,
             },
             ch,
             self.created_by,
@@ -75,15 +79,15 @@ class ProfessorTools:
         out = cs.public(campaign)
         out["next"] = (
             "This is a draft: nothing is sent. Show the user the specification (every value with its source); "
-            "submit_campaign opens the approval hold point in DeepVac Insight."
+            "submit_campaign opens the approval decision point in Deepvac Insight."
         )
         return out
 
     def submit_campaign(self, campaign_id: int) -> dict:
         out = cs.public(cs.submit(campaign_id, actor=ACTOR))
         out["next"] = (
-            "An operator approves or declines it in DeepVac Insight (Campaigns page). Nothing moves until then. "
-            "Insight tells the chat when a hold point opens or the campaign ends; wait_for_campaign waits a few "
+            "An operator approves or declines it in Deepvac Insight (AI Agents page). Nothing moves until then. "
+            "Insight tells the chat when a decision point opens or the campaign ends; wait_for_campaign waits a few "
             "minutes for a change."
         )
         return out
@@ -93,11 +97,12 @@ class ProfessorTools:
         if campaign is None:
             raise cs.CampaignError("No campaigns yet.")
         out = cs.public(campaign)
-        points = cs.trace(campaign["id"], time.time() - 30 * 60)
+        now = cs.chamber_now(campaign["runtime"])
+        points = cs.trace(campaign["id"], now - 30 * 60)
         if points:
             out["last_30_min"] = [
                 {
-                    "minutes_ago": round((time.time() - p["t"]) / 60.0, 1),
+                    "minutes_ago": round((now - p["t"]) / 60.0, 1),
                     "temperature_c": round(p["temp"], 2) if p["temp"] is not None else None,
                     "setpoint_c": round(p["setpoint"], 2) if p["setpoint"] is not None else None,
                 }
@@ -113,7 +118,7 @@ class ProfessorTools:
         }
 
     def wait_for_campaign(self, campaign_id: int, timeout_s: float = WAIT_DEFAULT_S) -> dict:
-        """Waits until the campaign's state or hold point changes."""
+        """Waits until the campaign's state or decision point changes."""
         timeout_s = max(1.0, min(float(timeout_s), WAIT_MAX_S))
         start = cs.news_key(cs.require(campaign_id))
         started = time.monotonic()
@@ -125,7 +130,7 @@ class ProfessorTools:
         out["waited_s"] = round(time.monotonic() - started)
         if out["news"] == start:
             out["next"] = (
-                "Nothing changed yet. Don't wait again: DeepVac Insight tells the chat when a hold point opens "
+                "Nothing changed yet. Don't wait again: Deepvac Insight tells the chat when a decision point opens "
                 "or the campaign ends."
             )
         return out
@@ -136,7 +141,7 @@ class ProfessorTools:
             "campaign": campaign_id,
             "hold_point": hold["title"],
             "recommended": option,
-            "next": "The operator sees your recommendation in DeepVac Insight and decides.",
+            "next": "The operator sees your recommendation in Deepvac Insight and decides.",
         }
 
     def issue_report(self, campaign_id: int, summary: str) -> dict:
@@ -148,7 +153,7 @@ class ProfessorTools:
             "markdown_link": files["markdown_link"],
             "chain_ok": files["chain_ok"],
             "signed": files["signed"],
-            "next": "Give the user the report as a markdown link. An operator signs it off in DeepVac Insight.",
+            "next": "Give the user the report as a markdown link. An operator signs it off in Deepvac Insight.",
         }
 
     def get_report_facts(self, campaign_id: int) -> dict:

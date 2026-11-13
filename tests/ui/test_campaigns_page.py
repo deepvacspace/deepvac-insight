@@ -1,4 +1,4 @@
-"""Campaigns page: drafting, hold-point decisions and the report."""
+"""Tests of the Campaigns page."""
 
 import pytest
 
@@ -32,7 +32,7 @@ def test_draft_submit_and_decide_the_approval(page):
     assert page.submit_btn.isVisible() and not page.hold_card.isVisible()
     assert "OFF" in page.supervisor_label.text()
     spec = page.sections["spec"][1]
-    assert spec.item(2, 1).text() == "+50 °C" and "5 °C margin" in spec.item(2, 2).text()
+    assert spec.item(3, 1).text() == "+50 °C" and "5 °C margin" in spec.item(3, 2).text()
 
     page.submit()
     assert cs.require(campaign["id"])["state"] == "approval"
@@ -51,7 +51,7 @@ def test_draft_submit_and_decide_the_approval(page):
     assert hold["choice"] == "approve" and hold["decided_by"] == "Ana"
     assert hold["comment"] == "checked with the customer"
     log = page.sections["log"][1]
-    assert log.item(0, 3).text() == "Hold point decision"
+    assert log.item(0, 3).text() == "Decision made"
 
 
 def test_report_and_sign_off_of_an_ended_campaign(page, monkeypatch):

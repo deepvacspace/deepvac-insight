@@ -1,5 +1,4 @@
-"""Test campaigns: specification, hold points, run supervisor, chained log,
-report and Professor tools."""
+"""Tests of test campaigns."""
 
 import asyncio
 import json
@@ -25,7 +24,7 @@ CHAMBER = {"id": 7, "name": "DV-1", "protocol": "plc", "host": "127.0.0.1", "por
 
 
 class FakeClient:
-    """A chamber whose temperature the test sets; records what was sent."""
+    """Fake chamber that records what was sent."""
 
     def __init__(self):
         self.temp = 20.0
@@ -90,7 +89,7 @@ def tick(supervisor, client, now):
 
 def decide(campaign_id, choice, user="Ana"):
     hold = cs.open_hold_of(campaign_id)
-    assert hold is not None, "expected an open hold point"
+    assert hold is not None, "expected an open decision point"
     return cs.decide_hold(hold["id"], choice, user)
 
 
@@ -278,7 +277,7 @@ def test_the_professor_tools_over_mcp(rig):
     event = activity.since(0)[-1]
     assert event["agent"] == "Professor" and event["campaign"] == campaign["id"]
     assert "drafting a qualification campaign for CubeSat" in event["text"]
-    with pytest.raises(ToolError, match="no hold point"):
+    with pytest.raises(ToolError, match="no decision point"):
         asyncio.run(
             mcp.call_tool(
                 "recommend", {"campaign_id": campaign["id"], "option": "approve", "rationale": "ok"}

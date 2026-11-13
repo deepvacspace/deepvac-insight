@@ -1,5 +1,4 @@
-"""Campaigns page: lists test campaigns and shows the selected one's stage, hold
-point, specification, steps, results and log."""
+"""Campaigns page."""
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -43,7 +42,7 @@ STATE_NAMES = {
     "draft": "Draft",
     "approval": "Waiting for approval",
     "running": "Running",
-    "holding": "Hold point",
+    "holding": "Decision point",
     "completed": "Completed",
     "aborted": "Aborted",
     "declined": "Declined",
@@ -52,7 +51,7 @@ STATE_NAMES = {
 
 
 class NewCampaignDialog(QDialog):
-    """Dialog for a customer's requirement: article, predicted temperatures, level, chamber."""
+    """Dialog for a new campaign's requirement."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,6 +115,11 @@ def _table(headers):
 
 
 def _fill(table, rows):
+    """Fills a table when its rows changed."""
+    key = repr(rows)
+    if getattr(table, "_rows_key", None) == key:
+        return
+    table._rows_key = key
     table.setRowCount(len(rows))
     for r, row in enumerate(rows):
         for c, value in enumerate(row):
@@ -131,7 +135,7 @@ def _fill(table, rows):
 
 class CampaignsPage(QWidget):
     def __init__(self, current_user, supervisor_running=None, parent=None):
-        """supervisor_running: callable returning True while the run supervisor is on."""
+        """Campaigns page."""
         super().__init__(parent)
         self.setObjectName("workspaceBody")
         self.current_user = current_user or {}
@@ -312,6 +316,11 @@ class CampaignsPage(QWidget):
         except Exception as exc:
             self.status_label.setText(str(exc))
             return
+        listing = [(c["id"], c["title"], c["state"], c["spec"]["rehearsal"]) for c in campaigns]
+        if listing == getattr(self, "_listing", None):
+            self._show(cs.get_campaign(self._selected) if self._selected else None)
+            return
+        self._listing = listing
         self.list.blockSignals(True)
         self.list.clear()
         current = None
@@ -459,9 +468,9 @@ class CampaignsPage(QWidget):
         if hold is None:
             self._shown_hold = None
             return
-        if self._shown_hold == (hold["id"], bool(hold["recommendation"])):
+        if self._shown_hold == (hold["id"], (hold["recommendation"] or {}).get("at")):
             return
-        self._shown_hold = (hold["id"], bool(hold["recommendation"]))
+        self._shown_hold = (hold["id"], (hold["recommendation"] or {}).get("at"))
         self.hold_title.setText(hold["title"])
         self.hold_detail.setText(hold["detail"])
         rec = hold["recommendation"]

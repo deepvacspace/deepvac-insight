@@ -1,8 +1,4 @@
-"""Test campaigns: specification from the standards pack, lifecycle, hold points,
-the chained signed log and the views agents and the UI read. Stored in
-data/deepvac_campaigns.sqlite3.
-
-    requirement --draft--> plan --submit--> approval --approve--> run --> report"""
+"""Test campaigns: specification, lifecycle, decision points and signed log."""
 
 import copy
 import hashlib
@@ -11,6 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import app.common as common
+from app.services.pressure import hpa_to_torr
 
 DB_NAME = "deepvac_campaigns.sqlite3"
 PACK_FILE = "standards_pack.json"
@@ -32,11 +29,33 @@ STAGES = ("requirement", "plan", "approval", "run", "report")
 LEVELS = ("qualification", "acceptance")
 ZERO_HASH = "0" * 64
 
+
+def _tc(name, tau_min, offset_c, gradient_c, platen_weight, stabilisation=False):
+    return {
+        "name": name,
+        "stabilisation": stabilisation,
+        "model": {
+            "tau_min": tau_min,
+            "offset_c": offset_c,
+            "gradient_c": gradient_c,
+            "platen_weight": platen_weight,
+        },
+    }
+
+
+GENERIC_THERMOCOUPLES = [
+    _tc("Thermocouple 1", 20, 0.2, 0.3, 0.7, stabilisation=True),
+    _tc("Thermocouple 2", 25, -0.2, -0.3, 0.75, stabilisation=True),
+    _tc("Thermocouple 3", 15, 0.3, 0.4, 0.6),
+    _tc("Thermocouple 4", 12, -0.1, -0.1, 0.9),
+]
+
 DEFAULT_PACK = {
+    "pack_version": 2,
     "name": "ECSS-style demo pack",
     "standard": "ECSS-E-ST-10-03",
     "note": (
-        "Illustrative values for the demo. A DeepVac engineer replaces them with the standard's values "
+        "Illustrative values for the demo. A Deepvac engineer replaces them with the standard's values "
         "and clause numbers before any real test."
     ),
     "clause": "clause to confirm",
@@ -44,36 +63,111 @@ DEFAULT_PACK = {
         "qualification": {"margin_c": 10.0, "cycles": 4},
         "acceptance": {"margin_c": 5.0, "cycles": 2},
     },
+    "single_ramp": {"margin_c": 10.0},
     "dwell_min": 240.0,
     "ramp_c_per_min": 2.0,
     "band_c": 3.0,
-    "stabilise_timeout_min": 60.0,
+    "stabilisation": {"rate_c_per_h": 3.0, "window_min": 15.0},
+    "pressure_rule": {"hold_hpa": 1e-4, "resume_hpa": 5e-5, "max_hold_min": 60.0},
+    "sensor_rule": {
+        "open_low_c": -200.0,
+        "open_high_c": 400.0,
+        "frozen_min": 5.0,
+        "spike_c": 10.0,
+        "spikes": 4,
+        "spike_window_min": 10.0,
+    },
+    "stabilise_timeout_min": 180.0,
     "excursion_s": 120.0,
     "extend_dwell_min": 60.0,
     "extend_stabilise_min": 30.0,
     "vent_band_c": [10.0, 40.0],
     "ambient_c": 20.0,
-    "vacuum": "manual",
+    "articles": [
+        {
+            "name": "6U CubeSat",
+            "op_min_c": -10.0,
+            "op_max_c": 45.0,
+            "thermocouples": [
+                _tc("+X solar panel", 15, 0.6, 0.8, 0.3),
+                _tc("Battery pack", 30, -0.3, -0.4, 0.8, stabilisation=True),
+                _tc("OBC board", 22, 0.3, 0.3, 0.7, stabilisation=True),
+                _tc("−Z structure", 18, -0.2, -0.2, 0.9),
+            ],
+        },
+        {
+            "name": "Reaction Wheel Assembly",
+            "op_min_c": -20.0,
+            "op_max_c": 50.0,
+            "thermocouples": [
+                _tc("Wheel housing", 25, 0.3, 0.3, 0.7),
+                _tc("Motor driver", 20, 0.5, 0.4, 0.8, stabilisation=True),
+                _tc("Bearing", 30, -0.2, -0.3, 0.75, stabilisation=True),
+                _tc("Mounting flange", 12, -0.1, -0.1, 0.95),
+            ],
+        },
+        {
+            "name": "Optical Camera Payload",
+            "op_min_c": -15.0,
+            "op_max_c": 40.0,
+            "thermocouples": [
+                _tc("Lens barrel", 25, 0.4, 0.5, 0.5, stabilisation=True),
+                _tc("Focal plane", 30, -0.3, -0.4, 0.6, stabilisation=True),
+                _tc("Electronics box", 22, 0.3, 0.2, 0.8),
+                _tc("Baseplate", 10, -0.1, -0.1, 0.95),
+            ],
+        },
+        {
+            "name": "Power Control and Distribution Unit",
+            "op_min_c": -25.0,
+            "op_max_c": 55.0,
+            "thermocouples": [
+                _tc("Power board", 22, 0.6, 0.5, 0.75, stabilisation=True),
+                _tc("DC/DC converter", 18, 0.8, 0.6, 0.8, stabilisation=True),
+                _tc("Chassis", 15, -0.2, -0.3, 0.85),
+                _tc("Baseplate", 10, -0.1, -0.1, 0.95),
+            ],
+        },
+    ],
+    "vacuum": "auto",
+    "vacuum_start_hpa": 1e-5,
+    "pump_timeout_min": 360.0,
     "rehearsal": {"dwell_min": 2.0, "stabilise_timeout_min": 15.0, "cycles": 1},
 }
 
+CYCLING, RAMP = "cycling", "ramp"
+TEST_TYPES = (CYCLING, RAMP)
 MAX_RAMP_C_PER_MIN = 20.0
 MAX_CYCLES = 20
 MAX_DWELL_MIN = 24 * 60.0
 MIN_SPAN_C = 5.0
+MAX_MARGIN_C = 30.0
 OVERRIDABLE = ("cycles", "dwell_min", "ramp_c_per_min")
 SETTLE_GUESS_MIN = 10.0
 
 HOLD_OPTIONS = {
     "approval": [
         ("approve", "Approve and start", "The run supervisor starts the campaign on the chamber."),
-        ("decline", "Decline", "Nothing is sent. The planner can draft a new specification."),
+        (
+            "decline",
+            "Decline",
+            "Nothing is sent. The plan goes back to the Plan stage to be changed.",
+        ),
     ],
     "pump": [
         (
             "confirm",
             "Pumped down: start cycling",
             "Confirm the chamber reached the start pressure; the first ramp starts.",
+        ),
+        ("abort", "Abort the campaign", "Nothing has been heated or cooled yet."),
+    ],
+    "pump_slow": [
+        ("wait", "Wait longer", "Give the pumps more time to reach the start pressure."),
+        (
+            "confirm",
+            "Start cycling anyway",
+            "Start the first ramp above the start pressure; logged as a deviation in the report.",
         ),
         ("abort", "Abort the campaign", "Nothing has been heated or cooled yet."),
     ],
@@ -87,6 +181,46 @@ HOLD_OPTIONS = {
             "accept",
             "Accept and continue",
             "Continue the dwell; the excursion is logged as a deviation in the report.",
+        ),
+        ("abort", "Abort and return to ambient", "Stop cycling; the chamber returns to ambient."),
+    ],
+    "oscillation": [
+        (
+            "revert_pid",
+            "Revert to the operator's PID table",
+            "A person makes this change: Insight writes the operator's PID gains back to the PLC. "
+            "Agents can't change settings.",
+        ),
+        (
+            "accept",
+            "Keep the gains and continue",
+            "Continue the dwell; the oscillation is logged as a deviation in the report.",
+        ),
+        ("abort", "Abort and return to ambient", "Stop cycling; the chamber returns to ambient."),
+    ],
+    "pressure": [
+        (
+            "wait",
+            "Keep holding",
+            "The temperature stays held until the pressure falls below the resume limit.",
+        ),
+        (
+            "resume",
+            "Resume anyway",
+            "Continue above the pressure limit; logged as a deviation in the report.",
+        ),
+        ("abort", "Abort and return to ambient", "Stop cycling; the chamber returns to ambient."),
+    ],
+    "sensor": [
+        (
+            "exclude",
+            "Exclude it and continue",
+            "The stabilisation criterion uses the remaining sensors; logged as a deviation.",
+        ),
+        (
+            "recheck",
+            "Check it again",
+            "The sensor is tested again in 2 min; if it is still invalid the decision point comes back.",
         ),
         ("abort", "Abort and return to ambient", "Stop cycling; the chamber returns to ambient."),
     ],
@@ -191,6 +325,11 @@ def connect(path=None):
             setpoint REAL
         );
         CREATE INDEX IF NOT EXISTS idx_trace_campaign ON campaign_trace(campaign_id, t);
+        CREATE TABLE IF NOT EXISTS tamper_demo (
+            campaign_id INTEGER PRIMARY KEY,
+            seq INTEGER NOT NULL,
+            original TEXT NOT NULL
+        );
         """
     )
     return conn
@@ -286,8 +425,7 @@ def list_campaigns(limit=50, states=None):
 
 
 def update(campaign_id, expected_state=None, **fields):
-    """Writes fields (dicts and lists as JSON), optionally only in expected_state;
-    True when the row changed."""
+    """Updates a campaign's fields; returns True when the row changed."""
     columns = {v: k for k, v in JSON_FIELDS.items()}
     sets, values = [], []
     for name, value in fields.items():
@@ -313,6 +451,15 @@ def update(campaign_id, expected_state=None, **fields):
         conn.close()
 
 
+RENAMED_ARTICLES = {"6U CubeSat, Earth observation demo": "6U CubeSat"}
+OLD_DEMO_ARTICLES = {
+    "6U CubeSat",
+    "6U CubeSat, Earth observation demo",
+    "Star tracker unit",
+    "Electric thruster module",
+}
+
+
 def load_pack():
     """Loads data/standards_pack.json, writing the demo pack on first use."""
     path = common.DATA_DIR / PACK_FILE
@@ -326,12 +473,79 @@ def load_pack():
         raise CampaignError(f"{path} is not valid JSON: {exc}") from exc
     merged = copy.deepcopy(DEFAULT_PACK)
     merged.update(pack)
+    for article in merged.get("articles") or []:
+        if article.get("name") in RENAMED_ARTICLES:
+            article["name"] = RENAMED_ARTICLES[article["name"]]
+    if pack.get("pack_version", 1) < DEFAULT_PACK["pack_version"]:
+        names = {a.get("name") for a in pack.get("articles") or []}
+        if names <= OLD_DEMO_ARTICLES:
+            merged["articles"] = copy.deepcopy(DEFAULT_PACK["articles"])
+        if float(pack.get("stabilise_timeout_min", 0)) < DEFAULT_PACK["stabilise_timeout_min"]:
+            merged["stabilise_timeout_min"] = DEFAULT_PACK["stabilise_timeout_min"]
+        merged["pack_version"] = DEFAULT_PACK["pack_version"]
     return merged
+
+
+def article_of(pack, name):
+    """The pack's test article of that name, or None."""
+    return next((a for a in pack.get("articles") or [] if a.get("name") == name), None)
+
+
+def thermocouples_of(pack, name):
+    """Returns an article's thermocouples from the pack."""
+    article = article_of(pack, name) or {}
+    return copy.deepcopy(article.get("thermocouples") or GENERIC_THERMOCOUPLES)
+
+
+def sci(value):
+    """1e-05 → "1×10⁻⁵", 7.5e-06 → "7.5×10⁻⁶"."""
+    mantissa, exponent = f"{float(value):.1e}".split("e")
+    sup = str(int(exponent)).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
+    mantissa = mantissa.rstrip("0").rstrip(".")
+    return f"{mantissa}×10{sup}"
+
+
+TORR_PER_HPA = 0.750062
+
+
+def pressure_in(hpa, unit):
+    """Converts a pressure from hPa to a PLC unit."""
+    unit = (unit or "Torr").strip().lower()
+    if unit == "torr":
+        return hpa * TORR_PER_HPA
+    if unit == "pa":
+        return hpa * 100.0
+    return hpa
+
+
+def chamber_now(runtime, wall=None):
+    """Returns the chamber clock now."""
+    import time as _time
+
+    wall = wall or _time.time()
+    clock = (runtime or {}).get("clock")
+    if not clock:
+        return wall
+    from app.services import plc_gate
+
+    return plc_gate.plc_clock_now(
+        clock["plc"], clock["wall"], clock.get("rate", 1.0), wall, max_gap_s=5.0
+    )
 
 
 def deg(value):
     r = round(float(value), 1)
     return f"{r:+g} °C" if r else "0 °C"
+
+
+def _requested(value, default, kind):
+    """Returns a requested number, else the default."""
+    if value in (None, ""):
+        return kind(default)
+    try:
+        return kind(float(value))
+    except (TypeError, ValueError) as exc:
+        raise CampaignError(f"{value!r} is not a number.") from exc
 
 
 def derive_spec(requirement, pack, limits, overrides=None):
@@ -346,7 +560,28 @@ def derive_spec(requirement, pack, limits, overrides=None):
         raise CampaignError(f"The predictions should be at least {MIN_SPAN_C:g} °C apart.")
     clause = f"{pack['standard']}, {pack['clause']}"
     lv = pack["levels"][level]
-    margin = float(lv["margin_c"])
+    ramp = (requirement.get("test_type") or CYCLING) == RAMP
+    if ramp:
+        default_margin = float((pack.get("single_ramp") or {}).get("margin_c", lv["margin_c"]))
+        default_from = f"{clause}, single ramp"
+    else:
+        default_margin = float(lv["margin_c"])
+        default_from = f"{clause}, {level} level"
+    margin = _requested(requirement.get("margin_c"), default_margin, float)
+    if not 0 <= margin <= MAX_MARGIN_C:
+        raise CampaignError(f"The margin must be between 0 and {MAX_MARGIN_C:g} °C.")
+    margin_from = (
+        default_from
+        if margin == default_margin
+        else f"test requirements; the default is {default_margin:g} °C"
+    )
+    default_cycles = int(lv["cycles"])
+    cycles = default_cycles if ramp else _requested(requirement.get("cycles"), default_cycles, int)
+    cycles_from = (
+        f"{clause}, {level} level"
+        if cycles == default_cycles
+        else f"Test requirements; the {level} level's default is {default_cycles}"
+    )
     spec = {
         "article": requirement["article"],
         "level": level,
@@ -355,7 +590,7 @@ def derive_spec(requirement, pack, limits, overrides=None):
         "margin_c": margin,
         "hot_c": op_max + margin,
         "cold_c": op_min - margin,
-        "cycles": int(lv["cycles"]),
+        "cycles": cycles,
         "dwell_min": float(pack["dwell_min"]),
         "ramp_c_per_min": float(pack["ramp_c_per_min"]),
         "band_c": float(pack["band_c"]),
@@ -365,22 +600,47 @@ def derive_spec(requirement, pack, limits, overrides=None):
         "extend_stabilise_min": float(pack["extend_stabilise_min"]),
         "vent_band_c": [float(v) for v in pack["vent_band_c"]],
         "ambient_c": float(pack["ambient_c"]),
-        "vacuum": pack.get("vacuum", "manual"),
+        "test_type": requirement.get("test_type") or CYCLING,
+        "direction": requirement.get("direction") or "up",
+        "vacuum": pack.get("vacuum", "auto"),
+        "vacuum_start_hpa": float(pack.get("vacuum_start_hpa", 1e-5)),
+        "pump_timeout_min": float(pack.get("pump_timeout_min", 360.0)),
+        "thermocouples": thermocouples_of(pack, requirement["article"]),
+        "stabilisation": dict(DEFAULT_PACK["stabilisation"], **(pack.get("stabilisation") or {})),
+        "pressure_rule": dict(DEFAULT_PACK["pressure_rule"], **(pack.get("pressure_rule") or {})),
+        "sensor_rule": dict(DEFAULT_PACK["sensor_rule"], **(pack.get("sensor_rule") or {})),
         "rehearsal": bool(requirement.get("rehearsal")),
         "pack": {"name": pack["name"], "standard": pack["standard"], "note": pack["note"]},
         "sources": {
-            "hot_c": f"Highest predicted {deg(op_max)} plus a {margin:g} °C margin ({clause})",
-            "cold_c": f"Lowest predicted {deg(op_min)} minus a {margin:g} °C margin ({clause})",
-            "cycles": clause,
+            "hot_c": f"Highest predicted {deg(op_max)} plus a {margin:g} °C margin ({margin_from})",
+            "cold_c": f"Lowest predicted {deg(op_min)} minus a {margin:g} °C margin ({margin_from})",
+            "cycles": cycles_from,
             "dwell_min": clause,
             "band_c": clause,
             "ramp_c_per_min": f"Chamber limit and {clause}",
-            "stabilise_timeout_min": "DeepVac chamber rule",
-            "excursion_s": "DeepVac chamber rule",
-            "vent_band_c": "DeepVac chamber rule",
+            "stabilise_timeout_min": "Deepvac chamber rule",
+            "excursion_s": "Deepvac chamber rule",
+            "vent_band_c": "Deepvac chamber rule",
+            "vacuum_start_hpa": clause,
+            "pump_timeout_min": "Deepvac chamber rule",
+            "thermocouples": (
+                f"Test procedure of the {requirement['article']}"
+                if article_of(pack, requirement["article"])
+                else "Generic: the pack has no procedure for this test article"
+            ),
+            "stabilisation": f"Test procedure and {clause}",
+            "pressure_rule": "Test procedure: approved with the plan",
+            "sensor_rule": "Deepvac chamber rule",
         },
         "overrides": [],
     }
+    if spec["test_type"] not in TEST_TYPES:
+        raise CampaignError(f"test_type must be one of {', '.join(TEST_TYPES)}.")
+    if spec["direction"] not in ("up", "down"):
+        raise CampaignError('direction must be "up" or "down".')
+    if spec["test_type"] == RAMP:
+        spec["cycles"] = 1
+        spec["sources"]["cycles"] = "Single ramp: one plateau"
     if spec["rehearsal"]:
         for name, value in pack["rehearsal"].items():
             spec[name] = type(spec[name])(value)
@@ -421,8 +681,15 @@ def build_steps(spec):
     steps = []
     if spec["vacuum"] == "manual":
         steps.append({"kind": "pump", "label": "Pump down (the operator confirms)"})
+    elif spec["vacuum"] == "auto":
+        steps.append(
+            {
+                "kind": "pump",
+                "label": f"Pump down to {sci(hpa_to_torr(spec.get('vacuum_start_hpa', 1e-5)))} Torr",
+            }
+        )
     for c in range(1, spec["cycles"] + 1):
-        for plateau, target in (("hot", spec["hot_c"]), ("cold", spec["cold_c"])):
+        for plateau, target in plateaus(spec):
             steps.append(
                 {
                     "kind": "ramp",
@@ -442,36 +709,68 @@ def build_steps(spec):
                 }
             )
     steps.append({"kind": "ambient", "target_c": spec["ambient_c"], "label": "Return to ambient"})
-    if spec["vacuum"] == "manual":
+    if spec["vacuum"] in ("manual", "auto"):
         steps.append({"kind": "vent", "label": "Vent the chamber (operator approval)"})
     return steps
 
 
 def spec_rows(spec):
-    """(item, value, source) rows of a specification."""
+    """Returns the rows of a specification."""
     s = spec["sources"]
-    vac = (
-        "Pump-down and venting confirmed by the operator at hold points (no vacuum gauge connected)"
-        if spec["vacuum"] == "manual"
-        else "Not part of this campaign"
-    )
-    return [
+    vac = {
+        "manual": "Pump-down and venting confirmed by the operator at decision points (no vacuum gauge connected)",
+        "auto": (
+            f"Cycling starts once the chamber's gauge reads {sci(hpa_to_torr(spec.get('vacuum_start_hpa', 1e-5)))} Torr "
+            f"or less (at most {spec.get('pump_timeout_min', 360.0):g} min, then a decision point); without a "
+            "gauge the operator confirms. Venting approved by the operator"
+        ),
+    }.get(spec["vacuum"], "Not part of this campaign")
+    ramp = spec.get("test_type") == RAMP
+    shown = {plateau for plateau, _ in plateaus(spec)}
+    test = f"Single ramp {spec.get('direction', 'up')}, for accuracy" if ramp else "Thermal cycling"
+    rows = [
         ("Test article", spec["article"], "Customer requirement"),
-        ("Test level", spec["level"].capitalize(), "Customer requirement"),
-        ("Hot plateau", deg(spec["hot_c"]), s["hot_c"]),
-        ("Cold plateau", deg(spec["cold_c"]), s["cold_c"]),
-        ("Thermal cycles", str(spec["cycles"]), s["cycles"]),
+        ("Test type", test, "Customer requirement"),
+    ]
+    if not ramp:
+        rows.insert(1, ("Test level", spec["level"].capitalize(), "Customer requirement"))
+    if "hot" in shown:
+        rows.append(("Hot plateau", deg(spec["hot_c"]), s["hot_c"]))
+    if "cold" in shown:
+        rows.append(("Cold plateau", deg(spec["cold_c"]), s["cold_c"]))
+    if not ramp:
+        rows.append(("Thermal cycles", str(spec["cycles"]), s["cycles"]))
+    tcs = spec.get("thermocouples")
+    if tcs:
+        rows.append(
+            (
+                "Thermocouples",
+                ", ".join(t["name"] for t in tcs),
+                s.get("thermocouples", "Test procedure"),
+            )
+        )
+        stab = spec.get("stabilisation") or DEFAULT_PACK["stabilisation"]
+        names = stabilisation_names(spec)
+        stabilisation = (
+            f"{_and(names)} within ±{spec['band_c']:g} °C of the plateau, changing less than "
+            f"{stab['rate_c_per_h']:g} °C/h over {stab['window_min']:g} min: then the dwell starts"
+        )
+        stab_from = s.get("stabilisation", s["band_c"])
+    else:
+        stabilisation = f"Chamber temperature within ±{spec['band_c']:g} °C"
+        stab_from = s["band_c"]
+    rows += [
         ("Dwell per plateau", f"{spec['dwell_min']:g} min", s["dwell_min"]),
-        ("Stabilisation", f"Chamber temperature within ±{spec['band_c']:g} °C", s["band_c"]),
+        ("Stabilisation", stabilisation, stab_from),
         ("Ramp rate", f"At most {spec['ramp_c_per_min']:g} °C/min", s["ramp_c_per_min"]),
         (
             "Stabilisation timeout",
-            f"{spec['stabilise_timeout_min']:g} min, then a hold point",
+            f"{spec['stabilise_timeout_min']:g} min, then a decision point",
             s["stabilise_timeout_min"],
         ),
         (
             "Excursion",
-            f"Out of the band for {spec['excursion_s']:g} s during a dwell: a hold point",
+            f"Out of the band for {spec['excursion_s']:g} s during a dwell: a decision point",
             s["excursion_s"],
         ),
         (
@@ -479,12 +778,80 @@ def spec_rows(spec):
             f"{spec['vent_band_c'][0]:g} to {spec['vent_band_c'][1]:g} °C",
             s["vent_band_c"],
         ),
-        ("Vacuum", vac, "DeepVac chamber configuration"),
-        ("Sensors", "Chamber temperature (PLC)", "DeepVac chamber configuration"),
+        (
+            "Vacuum",
+            vac,
+            s.get("vacuum_start_hpa", "Deepvac chamber configuration")
+            if spec["vacuum"] == "auto"
+            else "Deepvac chamber configuration",
+        ),
     ]
+    rule = spec.get("pressure_rule")
+    if rule and spec["vacuum"] == "auto":
+        rows.append(
+            (
+                "Pressure rule",
+                f"Above {sci(hpa_to_torr(rule['hold_hpa']))} Torr a heating ramp is held (a dwell's "
+                f"clock paused) until the gauge reads {sci(hpa_to_torr(rule['resume_hpa']))} Torr; "
+                f"held over {rule['max_hold_min']:g} min, a decision point",
+                s.get("pressure_rule", "Test procedure"),
+            )
+        )
+    sensor = spec.get("sensor_rule")
+    if tcs and sensor:
+        rows.append(
+            (
+                "Sensor validity",
+                f"Open (outside {sensor['open_low_c']:g} … {sensor['open_high_c']:g} °C), frozen "
+                f"(unchanged for {sensor['frozen_min']:g} min) or spiking ({sensor['spikes']} jumps "
+                f"over {sensor['spike_c']:g} °C in {sensor['spike_window_min']:g} min): marked "
+                "invalid. Only a person excludes a stabilisation sensor",
+                s.get("sensor_rule", "Deepvac chamber rule"),
+            )
+        )
+    rows.append(
+        (
+            "Sensors",
+            (
+                f"Shroud (the PLC's control sensor), platen and {len(tcs)} thermocouples on the "
+                "test article"
+                if tcs
+                else "Chamber temperature (PLC)"
+            ),
+            "Deepvac chamber configuration",
+        )
+    )
+    return rows
+
+
+def _and(names):
+    names = list(names)
+    if len(names) <= 1:
+        return "".join(names) or "The chamber temperature"
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def stabilisation_names(spec):
+    """Returns the names of the stabilisation sensors."""
+    return [t["name"] for t in spec.get("thermocouples") or [] if t.get("stabilisation")]
+
+
+def plateaus(spec):
+    """Returns the plateaus of one cycle."""
+    if spec.get("test_type") == RAMP:
+        if spec.get("direction") == "down":
+            return [("cold", spec["cold_c"])]
+        return [("hot", spec["hot_c"])]
+    return [("hot", spec["hot_c"]), ("cold", spec["cold_c"])]
 
 
 def spec_line(spec):
+    if spec.get("test_type") == RAMP:
+        ((plateau, target),) = plateaus(spec)
+        return (
+            f"single ramp {'up' if plateau == 'hot' else 'down'} to {deg(target)}, "
+            f"{spec['dwell_min']:g} min dwell, ramp ≤ {spec['ramp_c_per_min']:g} °C/min"
+        )
     return (
         f"{spec['cycles']} cycles, {deg(spec['cold_c'])} to {deg(spec['hot_c'])}, "
         f"{spec['dwell_min']:g} min dwells, ramp ≤ {spec['ramp_c_per_min']:g} °C/min"
@@ -495,7 +862,7 @@ def estimate_hours(spec):
     minutes = 0.0
     temp = spec["ambient_c"]
     for _ in range(spec["cycles"]):
-        for target in (spec["hot_c"], spec["cold_c"]):
+        for _plateau, target in plateaus(spec):
             minutes += abs(target - temp) / spec["ramp_c_per_min"] + SETTLE_GUESS_MIN
             minutes += spec["dwell_min"]
             temp = target
@@ -514,7 +881,11 @@ def draft(requirement, chamber, created_by, limits, overrides=None, actor="Plann
         "op_max_c": float(requirement["op_max_c"]),
         "level": requirement.get("level") or "qualification",
         "rehearsal": bool(requirement.get("rehearsal")),
+        "test_type": requirement.get("test_type") or CYCLING,
+        "direction": requirement.get("direction") or "up",
         "notes": (requirement.get("notes") or "").strip(),
+        "margin_c": requirement.get("margin_c"),
+        "cycles": requirement.get("cycles"),
     }
     overrides = dict(overrides or {})
     overrides.setdefault("by", created_by)
@@ -548,14 +919,15 @@ def draft(requirement, chamber, created_by, limits, overrides=None, actor="Plann
         campaign_id,
         actor,
         "Specification drafted",
-        f"{article}, {spec['level']}{' (rehearsal)' if spec['rehearsal'] else ''}: {spec_line(spec)}"
+        f"{article}{'' if spec['test_type'] == RAMP else ', ' + spec['level']}"
+        f"{' (rehearsal)' if spec['rehearsal'] else ''}: {spec_line(spec)}"
         + "".join(f"; {o['field']} changed: {o['reason']}" for o in spec["overrides"]),
     )
     return get_campaign(campaign_id)
 
 
 def submit(campaign_id, actor="Planner"):
-    """Moves a plan to approval and opens the approval hold point."""
+    """Moves a plan to approval and opens the approval decision point."""
     campaign = require(campaign_id)
     if campaign["state"] != DRAFT:
         raise CampaignError(f"Campaign {campaign_id} is {campaign['state']}, not a draft.")
@@ -577,7 +949,7 @@ def submit(campaign_id, actor="Planner"):
         "approval",
         "Approve the test specification and start the campaign?",
         f"You're approving {spec_line(spec)} on the {spec['article']}, on {campaign['chamber_name']}; "
-        f"about {estimate_hours(spec):g} h. Nothing moves until you answer.",
+        f"about {estimate_hours(spec):g} h.",
     )
     return require(campaign_id)
 
@@ -588,7 +960,7 @@ def cancel(campaign_id, who, reason=""):
     if campaign["state"] not in (DRAFT, APPROVAL):
         raise CampaignError(
             f"Campaign {campaign_id} is {campaign['state']}: only a draft or a campaign waiting for approval "
-            "can be cancelled. An operator stops a running one in the Campaigns page."
+            "can be cancelled. An operator stops a running one in the AI Agents page."
         )
     if not update(
         campaign_id, campaign["state"], state=CANCELLED, ended_at=now_iso(), end_reason=reason
@@ -639,7 +1011,7 @@ def open_hold(campaign_id, kind, title, detail=""):
         hold_id = cur.lastrowid
     finally:
         conn.close()
-    record(campaign_id, "Run supervisor", "Hold point raised", f"{title} {detail}".strip())
+    record(campaign_id, "Run supervisor", "Decision point raised", f"{title} {detail}".strip())
     return get_hold(hold_id)
 
 
@@ -664,7 +1036,7 @@ def holds(campaign_id):
 
 
 def open_hold_of(campaign_id):
-    """The hold point waiting for the operator, if any."""
+    """The decision point waiting for the operator, if any."""
     return next((h for h in holds(campaign_id) if h["decided_at"] is None), None)
 
 
@@ -680,11 +1052,15 @@ def open_holds_count():
         conn.close()
 
 
-def recommend(campaign_id, option, rationale, by="Professor"):
-    """Records an agent's recommendation on the open hold point."""
+def recommend(campaign_id, option, rationale, by="Professor", hold_id=None):
+    """Records a recommendation on the open decision point."""
     hold = open_hold_of(campaign_id)
     if hold is None:
-        raise CampaignError(f"Campaign {campaign_id} has no hold point waiting for a decision.")
+        raise CampaignError(f"Campaign {campaign_id} has no decision point waiting for a decision.")
+    if hold_id is not None and hold["id"] != hold_id:
+        raise CampaignError(
+            f"Decision point {hold_id} of campaign {campaign_id} is no longer open."
+        )
     keys = [o["key"] for o in hold["options"]]
     if option not in keys:
         raise CampaignError(f"option must be one of {', '.join(keys)}.")
@@ -706,12 +1082,12 @@ def recommend(campaign_id, option, rationale, by="Professor"):
 
 
 def decide_hold(hold_id, choice, user_name, comment=""):
-    """Records a person's choice at a hold point."""
+    """Records a person's choice at a decision point."""
     if not user_name:
-        raise CampaignError("Only a signed-in user can decide at a hold point.")
+        raise CampaignError("Only a signed-in user can decide at a decision point.")
     hold = get_hold(hold_id)
     if hold is None:
-        raise CampaignError(f"No hold point {hold_id}.")
+        raise CampaignError(f"No decision point {hold_id}.")
     keys = [o["key"] for o in hold["options"]]
     if choice not in keys:
         raise CampaignError(f"choice must be one of {', '.join(keys)}.")
@@ -724,7 +1100,7 @@ def decide_hold(hold_id, choice, user_name, comment=""):
         )
         conn.commit()
         if cur.rowcount == 0:
-            raise CampaignError("Someone already decided at this hold point.")
+            raise CampaignError("Someone already decided at this decision point.")
     finally:
         conn.close()
     label = next(o["label"] for o in hold["options"] if o["key"] == choice)
@@ -732,7 +1108,7 @@ def decide_hold(hold_id, choice, user_name, comment=""):
     record(
         hold["campaign_id"],
         user_name,
-        "Hold point decision",
+        "Decision made",
         f"{hold['title']} {label}"
         + (f" ({comment})" if comment else "")
         + (
@@ -757,16 +1133,20 @@ def decided_unapplied(campaign_id):
 
 
 def mark_applied(hold_id):
+    """Marks a decision applied; returns True for the caller that claimed it."""
     conn = connect()
     try:
-        conn.execute("UPDATE holds SET applied = 1 WHERE id = ?", (int(hold_id),))
+        cur = conn.execute(
+            "UPDATE holds SET applied = 1 WHERE id = ? AND applied = 0", (int(hold_id),)
+        )
         conn.commit()
+        return cur.rowcount == 1
     finally:
         conn.close()
 
 
 def decisions(campaign_id):
-    """Decided hold points with time, choice and recommendation."""
+    """Decided decision points with time, choice and recommendation."""
     out = []
     for h in holds(campaign_id):
         if not h["decided_at"] or h["choice"] == "cancelled":
@@ -835,7 +1215,7 @@ def log_entries(campaign_id):
 
 
 def verify_chain(campaign_id):
-    """Checks the log's hash chain: {ok, entries, last_hash} or {ok: False, broken_at}."""
+    """Checks the log's hash chain."""
     prev = ZERO_HASH
     entries = log_entries(campaign_id)
     for e in entries:
@@ -851,7 +1231,7 @@ def verify_chain(campaign_id):
 
 
 def sign(text):
-    """Signs text with this installation's Ed25519 device key; returns (signature, public key) hex."""
+    """Signs text with the device key."""
     from app.services import licensing_client
 
     private_key, public_raw = licensing_client.get_or_create_device_keypair()
@@ -897,10 +1277,8 @@ def stage_of(campaign):
 
 def step_progress(campaign, now=None):
     """The current step and its progress."""
-    import time as _time
-
-    now = now or _time.time()
     runtime = campaign["runtime"] or {}
+    now = now or chamber_now(runtime)
     index = runtime.get("step_index", -1)
     steps = campaign["steps"]
     if not 0 <= index < len(steps):
@@ -908,10 +1286,13 @@ def step_progress(campaign, now=None):
     step = dict(steps[index])
     step["index"] = index + 1
     step["of"] = len(steps)
+    held = runtime.get("pressure_hold")
     if step["kind"] == "dwell":
         stabilised = runtime.get("stabilised_at")
         if stabilised is None:
-            step["status"] = "stabilising"
+            step["status"] = "stabilising" + (
+                f": {runtime['stab_status']}" if runtime.get("stab_status") else ""
+            )
         else:
             paused = runtime.get("dwell_paused_s", 0.0)
             if runtime.get("hold_paused_at"):
@@ -921,6 +1302,10 @@ def step_progress(campaign, now=None):
             step["status"] = f"dwell {elapsed:.0f} of {total:g} min"
             step["dwell_elapsed_min"] = round(elapsed, 1)
             step["dwell_total_min"] = total
+            if held:
+                step["status"] += ", paused (pressure)"
+    elif held and step["kind"] in ("ramp", "ambient"):
+        step["status"] = f"held at {deg(held['temp_c'])} (pressure)"
     elif step["kind"] in ("ramp", "ambient"):
         sent = runtime.get("job_sent_at")
         ramp_s = runtime.get("job_ramp_s", 0.0)
@@ -934,7 +1319,7 @@ def step_progress(campaign, now=None):
 
 
 def news_key(campaign):
-    """Key that changes when the campaign's state or hold point changes."""
+    """Key that changes when the campaign's state or decision point changes."""
     hold = open_hold_of(campaign["id"])
     return (
         f"{campaign['state']}|{hold['id'] if hold else ''}|{campaign.get('report_issued_at') or ''}"
@@ -990,3 +1375,61 @@ def public(campaign, detail=True):
     if campaign.get("report_files"):
         out["report"] = campaign["report_files"]
     return out
+
+
+def tamper_demo(campaign_id):
+    """Alters one signed log entry for the tampering demo."""
+    entries = log_entries(campaign_id)
+    if len(entries) < 3:
+        raise CampaignError("The log needs a few entries before it can be tampered with.")
+    entry = entries[len(entries) // 2]
+    conn = connect()
+    try:
+        if conn.execute(
+            "SELECT 1 FROM tamper_demo WHERE campaign_id = ?", (int(campaign_id),)
+        ).fetchone():
+            raise CampaignError("The log is already tampered with: undo it first.")
+        conn.execute(
+            "INSERT INTO tamper_demo (campaign_id, seq, original) VALUES (?, ?, ?)",
+            (int(campaign_id), entry["seq"], entry["detail"]),
+        )
+        conn.execute(
+            "UPDATE campaign_log SET detail = ? WHERE campaign_id = ? AND seq = ?",
+            (entry["detail"] + " (edited)", int(campaign_id), entry["seq"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return entry["seq"]
+
+
+def undo_tamper(campaign_id):
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT seq, original FROM tamper_demo WHERE campaign_id = ?", (int(campaign_id),)
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            "UPDATE campaign_log SET detail = ? WHERE campaign_id = ? AND seq = ?",
+            (row["original"], int(campaign_id), row["seq"]),
+        )
+        conn.execute("DELETE FROM tamper_demo WHERE campaign_id = ?", (int(campaign_id),))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def tampered(campaign_id):
+    conn = connect()
+    try:
+        return (
+            conn.execute(
+                "SELECT 1 FROM tamper_demo WHERE campaign_id = ?", (int(campaign_id),)
+            ).fetchone()
+            is not None
+        )
+    finally:
+        conn.close()
