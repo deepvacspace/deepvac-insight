@@ -1,8 +1,4 @@
-"""Brain tools: the crew's knowledge (the wiki) and the experiments database, for the Professor.
-
-Reading is free; the only write is a wiki proposal, which a person approves in Insight
-(wiki_service.py). The SQL is read-only (brain_db.query()).
-"""
+"""Brain tools: the wiki and the experiments database."""
 
 from app.services import brain_db, wiki_service
 
@@ -46,7 +42,7 @@ class BrainTools:
             "page": proposal["page"],
             "status": proposal["status"],
             "new_page": proposal["base_version"] is None,
-            "next": "Nothing is changed yet: a person reviews the proposal in DeepVac Insight (Wiki Proposals).",
+            "next": "Nothing is changed yet: a person reviews the proposal in Deepvac Insight (Wiki Proposals).",
         }
 
     def sql_schema(self) -> dict:

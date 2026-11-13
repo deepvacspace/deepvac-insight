@@ -1,14 +1,4 @@
-"""Automated local backups for the app's SQLite databases.
-
-Backs up every *.sqlite3 database directly under DATA_DIR (the run cache,
-user accounts, and annotations databases) into data/backups/<name>/, using
-sqlite3's own online backup API rather than a raw file copy -- safe even
-while the source database has an open connection, unlike copying the file
-bytes directly which can grab a half-written page.
-
-Runs at most once per calendar day per database unless force=True, and
-prunes old backups beyond a retention count so this can't grow unbounded.
-"""
+"""Automated local backups for the app's SQLite databases."""
 
 import shutil
 import sqlite3
@@ -32,7 +22,7 @@ def _today_stamp():
 
 
 def backup_database(source_path, reason="startup", backups_dir=None):
-    """Write one timestamped online backup of source_path. Returns the new path."""
+    """Write one timestamped online backup of source_path."""
     backups_dir = backups_dir or BACKUPS_DIR
     dest_dir = backups_dir / source_path.stem
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -57,10 +47,7 @@ def _prune(dest_dir, keep=MAX_BACKUPS_PER_DB):
 
 
 def backup_all(force=False, data_dir=None, backups_dir=None):
-    """Back up every database in data_dir (default: DATA_DIR). Skips a
-    database that already has a backup from today unless force=True. Never
-    raises -- a backup failure is printed and skipped rather than blocking
-    app startup."""
+    """Backs up every database."""
     data_dir = data_dir or DATA_DIR
     backups_dir = backups_dir or BACKUPS_DIR
     results = []
@@ -88,7 +75,7 @@ def backup_all(force=False, data_dir=None, backups_dir=None):
 
 
 def list_backups(backups_dir=None):
-    """Return {db_stem: [backup Paths, oldest first]} for display/restore."""
+    """Returns the backups of each database."""
     backups_dir = backups_dir or BACKUPS_DIR
     out: dict[str, list[Path]] = {}
     if not backups_dir.exists():
@@ -100,15 +87,7 @@ def list_backups(backups_dir=None):
 
 
 def restore_backup(db_name, backup_path, data_dir=None, backups_dir=None):
-    """Restore <data_dir>/<db_name> from a backup file. The live database is
-    itself preserved first (reason 'pre-restore') so a bad restore can be
-    undone. That safety copy is a raw file copy, not the sqlite online
-    backup API used elsewhere in this module -- restore exists precisely
-    for the case where the live database may already be damaged, and a
-    raw copy preserves whatever bytes are on disk even then, whereas the
-    backup API requires opening the source as a valid database first. Any
-    -wal/-shm sidecar files for the live database are cleared so the
-    restored file becomes the sole source of truth."""
+    """Restore <data_dir>/<db_name> from a backup file."""
     data_dir = data_dir or DATA_DIR
     backups_dir = backups_dir or BACKUPS_DIR
     target = data_dir / db_name

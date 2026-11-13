@@ -1,6 +1,4 @@
-"""Observer monitor: watches the PLC chambers, records Observer events (alarms,
-job ends, drift, anomalies, offline chambers, items waiting for a person) and
-pushes them to the Observer workflow in n8n."""
+"""Observer monitor: records chamber events and sends them to the Observer workflow."""
 
 import logging
 import threading
@@ -13,6 +11,7 @@ from app.core.analysis import anomalies
 from app.services import agent_requests_service as requests_service
 from app.services import campaign_service as cs
 from app.services import observer_service as obs
+from app.services import plc_gate
 
 log = logging.getLogger(__name__)
 
@@ -225,7 +224,19 @@ class ObserverMonitor:
             f"job:{chamber['id']}:{int(ended)}",
         )
 
-    def _drift(self, w, chamber, config, snap, now):
+    @staticmethod
+    def _plc_now(snap, now):
+        """Returns the PLC clock now."""
+        plc_time = getattr(snap, "plc_time", None)
+        if plc_time is None or snap.values_at is None:
+            return now
+        return plc_gate.plc_clock_now(
+            plc_time, snap.values_at, getattr(snap, "plc_rate", 1.0) or 1.0, now
+        )
+
+    def _drift(self, w, chamber, config, snap, wall):
+        now = self._plc_now(snap, wall)
+        rate = getattr(snap, "plc_rate", 1.0) or 1.0
         temp, setpoint = snap.values.get("temp"), snap.values.get("temp_ref")
         if snap.status != "work" or temp is None or setpoint is None:
             w.setpoint = w.setpoint_since = w.drift_since = None
@@ -258,7 +269,7 @@ class ObserverMonitor:
                 "error_c": round(error, 2),
                 "threshold_c": threshold,
                 "off_for_min": round((now - w.drift_since) / 60.0, 1),
-                "setpoint_steady_since": obs.iso(w.setpoint_since),
+                "setpoint_steady_since": obs.iso(wall - (now - w.setpoint_since) / rate),
                 "campaign_id": self._campaign_on(chamber),
             },
             chamber,
@@ -269,11 +280,14 @@ class ObserverMonitor:
         if snap.status != "work" or not hasattr(client, "history"):
             return
         window_s = float(config["anomaly_window_min"]) * 60.0
-        samples = [
-            s
-            for s in client.history(now - window_s)
-            if s.get("temp") is not None and s.get("temp_ref") is not None
-        ]
+        if hasattr(client, "plc_history"):
+            recent = [
+                {**s, "timestamp": s["plc_time"]}
+                for s in client.plc_history(self._plc_now(snap, now) - window_s)
+            ]
+        else:
+            recent = client.history(now - window_s)
+        samples = [s for s in recent if s.get("temp") is not None and s.get("temp_ref") is not None]
         if len(samples) < MIN_ANOMALY_SAMPLES:
             return
         times = [s["timestamp"] for s in samples]

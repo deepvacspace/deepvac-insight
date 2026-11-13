@@ -1,23 +1,4 @@
-"""The agent API: MCP endpoints (streamable HTTP) behind one bearer token.
-
-    /analyst/mcp   read-only analysis of recorded runs (the Analyst agent)
-    /worker/mcp    the chamber now, and requests to change it (the Worker agent)
-    /brain/mcp     the crew's knowledge: the wiki and the experiments database (the Professor)
-    /professor/mcp test campaigns: requirement, plan, approval, run, report (the Professor)
-    /observer/mcp  events Insight detected on the chambers (the Observer)
-    /activity      the agents' recent tool calls, for the app's chat
-    /requests      chamber requests by id (?ids=1,2), for the app's chat
-    /campaigns     test campaigns by id (?ids=1,2), for the app's chat
-    /observer/events  Observer events by id (?ids=1,2), for the Observer workflow
-    /health        liveness, no token
-
-Splitting the endpoints keeps each agent to its own tools whatever its MCP
-client is configured to include: the analyst endpoint has no path to a chamber.
-
-The token is DEEPVAC_AGENT_API_TOKEN, or generated once into
-data/agent_api_token. Run headless with `python -m app.api`; the desktop app
-starts the same server (start_in_background) when the Agent API is enabled.
-"""
+"""The agent API: MCP endpoints behind a bearer token."""
 
 import argparse
 import contextlib
@@ -42,7 +23,7 @@ from starlette.routing import Mount, Route
 import app.common as common
 from app.api import activity
 from app.api.analyst_tools import AnalystTools
-from app.api.auth import (  # noqa: F401 (api_token is part of this module's API)
+from app.api.auth import (  # noqa: F401
     TOKEN_FILE,
     api_token,
 )
@@ -69,7 +50,7 @@ REQUEST_TOOLS = (
     "request_stop",
     "get_request",
     "wait_for_request",
-)  # their result is one request: the activity feed notes its id and state
+)
 CAMPAIGN_TOOLS = (
     "draft_campaign",
     "submit_campaign",
@@ -81,44 +62,42 @@ REQUEST = ToolAnnotations(
 )
 
 ANALYST_INSTRUCTIONS = (
-    "Recorded DeepVac chamber experiments. Runs are numbered #1, #2, ... by start time (oldest first) and can "
+    "Recorded Deepvac chamber experiments. Runs are numbered #1, #2, ... by start time (oldest first) and can "
     "also be named by title, 'latest' or 'previous'. Every number comes from the run data; quote them, don't "
     "estimate. Temperatures are in °C, times in seconds from the run start unless stated."
 )
 BRAIN_INSTRUCTIONS = (
-    "The DeepVac crew's knowledge. The wiki holds how the chamber works, procedures, limits, definitions and "
+    "The Deepvac Agents' knowledge. The wiki holds how the chamber works, procedures, limits, definitions and "
     "lessons from experiments: search it (wiki_search) and read the pages (wiki_read) before planning, and quote "
     "them. The experiments database answers questions over many runs in SQL (sql_schema first, then sql_query). "
     "wiki_propose suggests a new page or a new version of one; a person approves it."
 )
 PROFESSOR_INSTRUCTIONS = (
-    "Test campaigns on a DeepVac chamber, as a thermal qualification or acceptance test: draft_campaign derives "
+    "Test campaigns on a Deepvac chamber, as a thermal qualification or acceptance test: draft_campaign derives "
     "the specification from the customer's requirement and the standards pack (every value names its source), "
-    "submit_campaign asks an operator to approve it, the run supervisor in DeepVac Insight runs it, hold points "
+    "submit_campaign asks an operator to approve it, the run supervisor in Deepvac Insight runs it, decision points "
     "stop it until the operator chooses an option (recommend one with your rationale), and issue_report writes "
-    "the as-run report. You never send commands to the chamber and never decide a hold point."
+    "the as-run report. You never send commands to the chamber and never decide a decision point."
 )
 OBSERVER_INSTRUCTIONS = (
-    "Events DeepVac Insight detected on its chambers: alarms, jobs ending, drift from a steady setpoint, anomalies "
-    "in the live temperature, a chamber offline, campaign hold points and requests waiting for a person. "
+    "Events Deepvac Insight detected on its chambers: alarms, jobs ending, drift from a steady setpoint, anomalies "
+    "in the live temperature, a chamber offline, campaign decision points and requests waiting for a person. "
     "get_event gives the facts and context; report_event records your summary and whether people should be "
     "notified. propose_stop / propose_setpoint create a request an operator approves; never on a chamber running "
     "a test campaign."
 )
 WORKER_INSTRUCTIONS = (
-    "The DeepVac chamber now. Reading tools return live PLC values. request_* tools never change the chamber "
-    "themselves: they create a request an operator approves or rejects in DeepVac Insight. wait_for_request "
+    "The Deepvac chamber now. Reading tools return live PLC values. request_* tools never change the chamber "
+    "themselves: they create a request an operator approves or rejects in Deepvac Insight. wait_for_request "
     "waits for that decision (up to a few minutes) and get_request reports the status. Never describe a "
     "requested change as done until the status is 'executed'."
 )
 
 
 def expose(mcp: MCPServer, annotations: ToolAnnotations):
-    """Registers a tool; expected failures (a run or chamber that doesn't exist, a value outside the
-    chamber's limits, the PLC offline) reach the agent with their message so it can correct itself.
-    Anything else is a crash: logged here, reported to the agent without details."""
+    """Registers a function as an MCP tool."""
 
-    agent = mcp.name.rsplit("-", 1)[-1]  # "deepvac-analyst" -> "analyst"
+    agent = mcp.name.rsplit("-", 1)[-1]
 
     def register(fn):
         signature = inspect.signature(fn)
@@ -129,7 +108,7 @@ def expose(mcp: MCPServer, annotations: ToolAnnotations):
                 called_with = dict(signature.bind_partial(*args, **kwargs).arguments)
             except TypeError:
                 called_with = dict(kwargs)
-            event = activity.started(agent, fn.__name__, called_with)  # shown in the app's chat
+            event = activity.started(agent, fn.__name__, called_with)
             try:
                 result = fn(*args, **kwargs)
             except (ValueError, LookupError, RuntimeError, ConnectionError) as exc:
@@ -143,7 +122,6 @@ def expose(mcp: MCPServer, annotations: ToolAnnotations):
                 result if fn.__name__ in CAMPAIGN_TOOLS and isinstance(result, dict) else None
             )
             activity.finished(event, ok=True, request=request, campaign=campaign)
-            # compact JSON text: an LLM reads it, and indented / structured duplicates cost tokens
             return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
         mcp.tool(annotations=annotations, structured_output=False)(tool)
@@ -218,7 +196,7 @@ def build_analyst_server(tools: AnalystTools) -> MCPServer:
 
     @expose(mcp, READ_ONLY)
     def get_events(run: str, limit: int = 40) -> dict:
-        """Events of a run recorded by DeepVac Control: job start/end, setpoint changes, ramps, PID changes,
+        """Events of a run recorded by Deepvac Control: job start/end, setpoint changes, ramps, PID changes,
         alarms, operator actions."""
         return tools.get_events(run, limit)
 
@@ -253,7 +231,7 @@ def build_analyst_server(tools: AnalystTools) -> MCPServer:
 
     @expose(mcp, READ_ONLY)
     def export_report(run: str, format: str = "pdf", compare_with: list[str] | None = None) -> dict:
-        """Write an experiment report of a run (format pdf or html) as DeepVac Control makes it: summary,
+        """Write an experiment report of a run (format pdf or html) as Deepvac Control makes it: summary,
         details, control KPIs, configuration, charts, stages, steady states, anomalies, events, notes;
         with compare_with, also a comparison against those runs. Returns the file path and a file:// link."""
         return tools.export_report(run, format, compare_with)
@@ -294,7 +272,7 @@ def build_analyst_server(tools: AnalystTools) -> MCPServer:
         start_c: float = 27.0,
         duration_min: float = 20.0,
     ) -> dict:
-        """Simulate a PID setting on the GRU digital twin of the chamber and get its KPIs.
+        """Simulate a PID setting on the LSTM digital twin of the chamber and get its KPIs.
         A simulation, not a measurement; nothing is sent to a chamber. kp 1-50, ki 1-1000, kd 1-20."""
         return tools.simulate_pid(kp, ki, kd, target_c, start_c, duration_min)
 
@@ -359,7 +337,7 @@ def build_worker_server(tools: WorkerTools) -> MCPServer:
     def wait_for_request(request_id: int, timeout_s: float = 120) -> dict:
         """Wait until the operator decides on a request and it is sent to the chamber (or rejected, failed,
         expired); at most 180 s. Returns the status; a request still pending after that is decided later,
-        and DeepVac Insight tells the chat then."""
+        and Deepvac Insight tells the chat then."""
         return tools.wait_for_request(request_id, timeout_s)
 
     @expose(mcp, READ_ONLY)
@@ -371,7 +349,7 @@ def build_worker_server(tools: WorkerTools) -> MCPServer:
 
 
 class BearerTokenMiddleware:
-    """Rejects requests without `Authorization: Bearer <token>` (except the exempt paths)."""
+    """Rejects requests without the bearer token."""
 
     def __init__(self, app, token: str, exempt=("/health",)):
         self.app = app
@@ -449,11 +427,15 @@ def build_professor_server(tools: ProfessorTools) -> MCPServer:
         dwell_min: float | None = None,
         ramp_c_per_min: float | None = None,
         reason: str = "",
+        test_type: str = "cycling",
+        direction: str = "up",
     ) -> dict:
         """Draft a test campaign from the customer's requirement: the test article, its lowest and highest
         predicted temperatures (°C) and the level (qualification or acceptance). The plateaus, cycles, dwell, ramp
         and band come from the standards pack; cycles / dwell_min / ramp_c_per_min change them (give the reason).
-        rehearsal: shortened dwells to try the campaign out. Returns the specification with the source of every
+        rehearsal: shortened dwells to try the campaign out. test_type "cycling" (hot and cold
+        plateaus, cycles) or "ramp" (a single ramp for accuracy: direction "up" to the hot plateau or "down" to the
+        cold one). Returns the specification with the source of every
         value, the steps and the estimated duration. A draft sends nothing."""
         return tools.draft_campaign(
             article,
@@ -467,16 +449,18 @@ def build_professor_server(tools: ProfessorTools) -> MCPServer:
             dwell_min,
             ramp_c_per_min,
             reason,
+            test_type,
+            direction,
         )
 
     @expose(mcp, REQUEST)
     def submit_campaign(campaign_id: int) -> dict:
-        """Submit a drafted campaign for approval: an operator approves or declines it in DeepVac Insight."""
+        """Submit a drafted campaign for approval: an operator approves or declines it in Deepvac Insight."""
         return tools.submit_campaign(campaign_id)
 
     @expose(mcp, READ_ONLY)
     def get_campaign(campaign_id: int = 0) -> dict:
-        """A campaign (0: the latest): state, stage, the current step and its progress, the open hold point with
+        """A campaign (0: the latest): state, stage, the current step and its progress, the open decision point with
         its options, plateau results, deviations, decisions, blocked commands, the last 30 min of temperature."""
         return tools.get_campaign(campaign_id)
 
@@ -487,14 +471,14 @@ def build_professor_server(tools: ProfessorTools) -> MCPServer:
 
     @expose(mcp, READ_ONLY)
     def wait_for_campaign(campaign_id: int, timeout_s: float = 120) -> dict:
-        """Wait until the campaign's state or hold point changes (approval decided, a hold point opens or is
+        """Wait until the campaign's state or decision point changes (approval decided, a decision point opens or is
         decided, the campaign ends); at most 180 s."""
         return tools.wait_for_campaign(campaign_id, timeout_s)
 
     @expose(mcp, REQUEST)
     def recommend(campaign_id: int, option: str, rationale: str) -> dict:
-        """Recommend one option at the campaign's open hold point, with the rationale and the numbers behind it.
-        The operator sees it in DeepVac Insight and decides."""
+        """Recommend one option at the campaign's open decision point, with the rationale and the numbers behind it.
+        The operator sees it in Deepvac Insight and decides."""
         return tools.recommend(campaign_id, option, rationale)
 
     @expose(mcp, READ_ONLY)
@@ -549,7 +533,7 @@ def build_observer_server(tools: ObserverTools) -> MCPServer:
     @expose(mcp, REQUEST)
     def propose_stop(event_id: int, reason: str) -> dict:
         """Propose stopping the job on the event's chamber. Creates a request an operator approves or rejects in
-        DeepVac Insight; nothing is sent yet. Refused on a chamber running a test campaign."""
+        Deepvac Insight; nothing is sent yet. Refused on a chamber running a test campaign."""
         return tools.propose_stop(event_id, reason)
 
     @expose(mcp, REQUEST)
@@ -576,7 +560,6 @@ def build_app(
     professor: ProfessorTools | None = None,
     observer: ObserverTools | None = None,
 ):
-    # Host header check against DNS rebinding: this machine, and n8n in Docker on it
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=["127.0.0.1:*", "localhost:*", "host.docker.internal:*", f"{host}:*"],
@@ -625,7 +608,7 @@ def build_app(
         return JSONResponse({"events": activity.since(since)})
 
     async def requests_by_id(request):
-        """Chamber requests by id (?ids=1,2): the chat follows the ones its crew made."""
+        """Returns chamber requests by id."""
         try:
             ids = [int(i) for i in request.query_params.get("ids", "").split(",") if i.strip()]
         except ValueError:
@@ -636,7 +619,7 @@ def build_app(
         )
 
     async def campaigns_by_id(request):
-        """Test campaigns by id (?ids=1,2)."""
+        """Returns test campaigns by id."""
         try:
             ids = [int(i) for i in request.query_params.get("ids", "").split(",") if i.strip()]
         except ValueError:
@@ -647,7 +630,7 @@ def build_app(
         )
 
     async def observer_events(request):
-        """Observer events by id (?ids=1,2)."""
+        """Returns Observer events by id."""
         try:
             ids = [int(i) for i in request.query_params.get("ids", "").split(",") if i.strip()]
         except ValueError:
@@ -674,7 +657,7 @@ def build_app(
 
 
 class AgentApi:
-    """The API server (and the executor of approved requests) in background threads."""
+    """The agent API server and request executor."""
 
     def __init__(
         self,
@@ -683,8 +666,7 @@ class AgentApi:
         execute_requests: bool = True,
         links: ChamberLinks | None = None,
     ):
-        """links: PLC connections to use; the desktop app passes the ones its Live tab
-        uses, so a chamber's PLC gets one connection per app, not two."""
+        """Agent API server; links are the PLC connections to share."""
         self.host = host
         self.port = port
         self.token = api_token()
@@ -746,14 +728,13 @@ def start_in_background(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> A
 
 
 def ensure_gui():
-    """The analyst's chart images and PDF reports paint with Qt, which needs a QGuiApplication: the
-    desktop app has one; headless, make an offscreen one (here, in the main thread)."""
+    """Ensures a QGuiApplication exists for painting charts and reports."""
     from PySide6.QtGui import QGuiApplication
 
     app = QGuiApplication.instance()
     if app is None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        if sys.platform == "win32":  # the offscreen platform looks for fonts here only
+        if sys.platform == "win32":
             fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
             os.environ.setdefault("QT_QPA_FONTDIR", fonts)
         app = QGuiApplication(["deepvac-agent-api"])
@@ -762,7 +743,7 @@ def ensure_gui():
 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
-        description="DeepVac agent API (MCP): analyst and worker endpoints."
+        description="Deepvac agent API (MCP): analyst and worker endpoints."
     )
     parser.add_argument(
         "--host",
@@ -785,13 +766,13 @@ def main(argv=None) -> None:
     if args.show_token:
         print(api_token())
         return
-    gui = ensure_gui()  # noqa: F841 (kept alive while the API runs)
+    gui = ensure_gui()  # noqa: F841
     api = AgentApi(args.host, args.port, execute_requests=not args.no_execute)
     api.start()
     if not api.wait_started():
         raise SystemExit(f"The agent API could not start on {args.host}:{args.port}.")
     print(
-        f"DeepVac agent API on {api.url}  (analyst: {api.url}/analyst/mcp, worker: {api.url}/worker/mcp)"
+        f"Deepvac agent API on {api.url}  (analyst: {api.url}/analyst/mcp, worker: {api.url}/worker/mcp)"
     )
     print(
         f"Bearer token: in {common.DATA_DIR / TOKEN_FILE} (or DEEPVAC_AGENT_API_TOKEN); --show-token prints it"

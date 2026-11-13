@@ -1,25 +1,4 @@
-"""Chamber actions requested by agents, waiting for a person to approve them,
-in their own local SQLite database.
-
-The agent API (app/api) never sends a command to a chamber directly: its
-worker tools create a request here (status "pending"). A signed-in user
-approves or rejects it in the app's Agent Requests dialog. The API's executor
-then sends approved requests to the PLC and records the outcome. Agents can
-read a request's status but have no way to approve one.
-
-    pending --approve--> approved --claim--> executing --> executed | failed
-            --reject---> rejected
-            --timeout--> expired
-
-claim() is atomic, so a request is sent at most once even when two API
-processes run executors on the same database.
-
-An executed setpoint or program starts a job on the PLC; the executor then
-follows that job (job_state) until it ends, so the chat can tell the crew:
-
-    starting --> running --> finished | stopped | alarm | replaced
-             --> unknown (the PLC never reported it running)
-"""
+"""Chamber actions requested by agents, awaiting approval."""
 
 import json
 import sqlite3
@@ -49,7 +28,6 @@ JOB_REPLACED = "replaced"
 JOB_UNKNOWN = "unknown"
 JOB_OPEN = (JOB_STARTING, JOB_RUNNING)
 
-# a request nobody decided on is not executed hours later, when the chamber may be doing something else
 PENDING_TIMEOUT = timedelta(minutes=30)
 
 
@@ -58,9 +36,7 @@ class AgentRequestError(ValueError):
 
 
 def connect_agent_requests(db_path=None):
-    """db_path overrides AGENT_REQUESTS_DB for this call only -- see
-    auth_service.connect_auth()'s docstring for why the other functions in
-    this file use the module-level constant implicitly instead."""
+    """Opens the agent requests database."""
     path = db_path or AGENT_REQUESTS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -89,7 +65,7 @@ def connect_agent_requests(db_path=None):
     )
     columns = {r["name"] for r in conn.execute("PRAGMA table_info(agent_requests)")}
     for column in ("job_state", "job_started_at", "job_ended_at"):
-        if column not in columns:  # databases from before jobs were followed
+        if column not in columns:
             conn.execute(f"ALTER TABLE agent_requests ADD COLUMN {column} TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_agent_requests_status ON agent_requests(status, id)"
@@ -126,7 +102,7 @@ def _row(row):
 
 
 def create_request(kind, chamber, params, summary, reason="", requested_by="agent"):
-    """chamber: a chambers_service row. Returns the new request."""
+    """Creates a chamber request."""
     if kind not in KINDS:
         raise AgentRequestError(f"Unknown request kind '{kind}'.")
     conn = connect_agent_requests()
@@ -194,7 +170,7 @@ def pending_count():
 
 
 def decide(request_id, approve, user_name, comment=""):
-    """A person's decision on a pending request. Only pending requests can be decided."""
+    """A person's decision on a pending request."""
     if not user_name:
         raise AgentRequestError("Only a signed-in user can decide on a request.")
     expire_stale()
@@ -235,7 +211,7 @@ def approved_requests():
 
 
 def claim(request_id):
-    """approved -> executing; True for the one caller that got it."""
+    """Claims an approved request for execution."""
     conn = connect_agent_requests()
     try:
         cur = conn.execute(
@@ -265,7 +241,7 @@ def get_requests(request_ids):
 
 
 def mark_done(request_id, ok, result, job_state=None):
-    """job_state: JOB_STARTING when an executed request started a job on the PLC."""
+    """Records a request's outcome."""
     conn = connect_agent_requests()
     try:
         conn.execute(
@@ -300,7 +276,7 @@ def open_jobs():
 
 
 def set_job_state(request_id, job_state, started_at=None, ended_at=None):
-    """started_at / ended_at: epoch seconds, or None to keep the stored value."""
+    """Updates the state of a request's job."""
 
     def iso(epoch):
         return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch else None
@@ -318,7 +294,7 @@ def set_job_state(request_id, job_state, started_at=None, ended_at=None):
 
 
 def epoch(iso_text):
-    """Epoch seconds of a timestamp stored here (None stays None)."""
+    """Converts a stored timestamp to epoch seconds."""
     return datetime.fromisoformat(iso_text).timestamp() if iso_text else None
 
 

@@ -1,5 +1,4 @@
-"""Connections to chamber PLCs for the agent API: one PlcGateClient per chamber
-with protocol "plc", started on first use and kept open."""
+"""PLC connections for the agent API, one per chamber."""
 
 import threading
 
@@ -21,7 +20,7 @@ class ChamberLinks:
         return chambers_service.list_chambers()
 
     def resolve(self, reference) -> dict:
-        """A chamber by id or name (case-insensitive); the only PLC chamber when reference is empty."""
+        """Finds a chamber by id or name."""
         chambers = self.chambers()
         text = str(reference or "").strip()
         if not text:
@@ -48,7 +47,7 @@ class ChamberLinks:
         with self._lock:
             client = self._clients.get(chamber["id"])
             if client and (client.host, client.port) != (chamber["host"], int(chamber["port"])):
-                client.stop()  # the chamber's address was edited
+                client.stop()
                 client = None
             if client is None:
                 client = PlcGateClient(chamber["host"], int(chamber["port"]))

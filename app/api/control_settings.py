@@ -1,9 +1,4 @@
-"""The chamber's configuration, imported from control2-client's settings.json
-(scripts/import_control_data.py writes data/control_settings.json).
-
-Gives labels and units of states, the program parameters a PLC job is made
-of, setpoint limits, alarm labels and PLC setting labels.
-"""
+"""The chamber configuration imported from Deepvac Control's settings."""
 
 import json
 import re
@@ -12,13 +7,20 @@ import app.common as common
 
 FILE_NAME = "control_settings.json"
 
-# when no settings were imported: the parameters every DeepVac PLC program has
 DEFAULT_CONTROL_PARAMS = [
-    {"name": "duration", "type": 256},
-    {"name": "temp", "type": 0, "min": -75, "max": 150},
-    {"name": "flags", "type": 257},
+    {"name": "duration", "type": 256, "label": "Duration", "value": 3600},
+    {
+        "name": "temp",
+        "type": 0,
+        "label": "Temperature",
+        "min": -75,
+        "max": 150,
+        "prec": 1,
+        "value": 25,
+    },
+    {"name": "flags", "type": 257, "label": "Flags"},
 ]
-DEFAULT_ENABLE_FLAGS = 0b011  # channel-enable bits of default_program.flags
+DEFAULT_ENABLE_FLAGS = 0b011
 
 
 def load() -> dict:
@@ -43,7 +45,7 @@ def temperature_limits(settings: dict) -> tuple[float, float]:
 
 
 def enable_flags(settings: dict) -> int:
-    """Channel-enable bits (0-2) of an interval, from the chamber's default program."""
+    """Returns the channel-enable bits of an interval."""
     flags = (settings.get("default_program") or {}).get("flags")
     return int(flags) & 0x07 if flags is not None else DEFAULT_ENABLE_FLAGS
 
@@ -52,7 +54,7 @@ _UNIT = re.compile(r"^(?P<label>.*?),\s*(?P<unit>[^,]{1,8})$")
 
 
 def state_meta(settings: dict) -> dict[str, dict]:
-    """{state name: {label, unit}} from the "states" section ("Chamber temperature, °C")."""
+    """Returns the label and unit of each state."""
     meta = {}
     for state in settings.get("states") or []:
         label = state.get("label") or state.get("name", "")
@@ -76,3 +78,41 @@ def setting_labels(settings: dict) -> dict[str, str]:
         for s in (settings.get("plc_settings") or {}).get("general") or []
         if "name" in s
     }
+
+
+def temperature_pid(settings: dict) -> dict | None:
+    """Returns the temperature PID table of the PLC settings."""
+    tables = (settings.get("plc_settings") or {}).get("pids") or []
+    labelled = [t for t in tables if "temp" in str(t.get("label", "")).lower()]
+    chosen = labelled[-1] if labelled else (tables[0] if tables else None)
+    if not chosen or not chosen.get("name") or not chosen.get("points"):
+        return None
+    name, points = str(chosen["name"]), int(chosen["points"])
+    gains = {}
+    for key in ("p", "i", "d"):
+        values = chosen.get(key) or []
+        for band in range(min(points, len(values))):
+            gains[f"{name}{key}{band}"] = float(values[band])
+    if len(gains) != 3 * points:
+        return None
+    return {
+        "name": name,
+        "label": chosen.get("label", ""),
+        "min": float(chosen.get("min", 0.0)),
+        "max": float(chosen.get("max", 0.0)),
+        "points": points,
+        "gains": gains,
+    }
+
+
+def pid_band(table: dict, setpoint: float) -> int:
+    """0-based band of the table the PLC uses at this setpoint."""
+    width = (table["max"] - table["min"]) / table["points"]
+    if width <= 0:
+        return 0
+    return int(min(max((setpoint - table["min"]) // width, 0), table["points"] - 1))
+
+
+def band_gains(table: dict, band: int) -> dict[str, float]:
+    """{"p", "i", "d"} of one band of the table."""
+    return {k: table["gains"][f"{table['name']}{k}{band}"] for k in ("p", "i", "d")}

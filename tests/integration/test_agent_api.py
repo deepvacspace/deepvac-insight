@@ -1,6 +1,4 @@
-"""Agent API (app/api): analyst tools over the run database, worker tools and
-the request executor against the fake PLC (scripts/fake_plc.py), and the
-bearer token on the HTTP app."""
+"""Tests of the agent API tools, request executor and token."""
 
 import importlib.util
 import json
@@ -151,13 +149,13 @@ def test_requests_reach_the_plc_only_after_approval(worker, fake_plc):
     assert request["status"] == "pending"
 
     executor = RequestExecutor(links)
-    assert executor.run_once() == 0  # not approved: nothing is sent
+    assert executor.run_once() == 0
     assert chamber.status == 1
 
     agent_requests_service.decide(request["id"], True, "Operator")
     assert executor.run_once() == 1
     assert tools.get_request(request["id"])["status"] == "executed"
-    deadline = time.monotonic() + 3  # the fake PLC applies the setpoint on its next tick
+    deadline = time.monotonic() + 3
     while (chamber.status != 2 or chamber.ref != 30.0) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert chamber.status == 2 and chamber.ref == 30.0
@@ -166,7 +164,7 @@ def test_requests_reach_the_plc_only_after_approval(worker, fake_plc):
 def test_json_chambers_are_not_controllable(deepvac_data_dir):
     tools = WorkerTools(ChamberLinks())
     with pytest.raises(ChamberError, match="monitoring feed"):
-        tools.get_live_status("Chamber 1")  # the seeded newline-JSON chamber
+        tools.get_live_status("Chamber 1")
 
 
 def test_http_app_needs_the_token(deepvac_data_dir):
@@ -183,7 +181,7 @@ def test_http_app_needs_the_token(deepvac_data_dir):
 
 
 def _run_until(executor, request_id, done, timeout=15.0):
-    """Runs the executor until done(request) holds; returns the request states seen."""
+    """Runs the executor until a condition holds."""
     seen = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -202,7 +200,7 @@ def test_the_worker_waits_for_the_decision_and_the_job_is_followed(worker, monke
 
     monkeypatch.setattr(worker_tools, "WAIT_POLL_S", 0.1)
     tools, links = worker
-    request = tools.request_setpoint(30, "short soak", "Fake PLC", hold_minutes=0.05)  # 3 s
+    request = tools.request_setpoint(30, "short soak", "Fake PLC", hold_minutes=0.05)
     undecided = tools.wait_for_request(request["id"], timeout_s=1)
     assert undecided["status"] == "pending" and "hasn't decided" in undecided["next"]
 

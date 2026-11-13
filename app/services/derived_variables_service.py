@@ -1,15 +1,4 @@
-"""User-defined derived/computed channels (e.g. "temperature_error" =
-temp_ref - temp, "heating_rate" = d(temp)/dt, a custom expression like
-"temp_u_p + temp_u_i + temp_u_d"), in their own local SQLite database.
-
-Unlike annotations/variable_rules (app/services/annotations_service.py),
-derived variables are NOT scoped to one run -- a definition is a reusable
-formula that gets applied to whichever run is open in the Analysis tab, as
-long as that run actually has the source channel(s) the formula needs
-(see compute_series() below, and missing_channels() for checking that
-upfront so the UI can explain why a formula isn't available for a given
-run rather than just silently omitting it).
-"""
+"""User-defined derived channels."""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -40,9 +29,7 @@ class DerivedVariableError(ValueError):
 
 
 def connect_derived_variables(db_path=None):
-    """db_path overrides DERIVED_VARIABLES_DB for this call only -- see
-    auth_service.connect_auth()'s docstring for why the other functions in
-    this file use the module-level constant implicitly instead."""
+    """Opens the derived variables database."""
     path = db_path or DERIVED_VARIABLES_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -176,9 +163,7 @@ def delete_derived_variable(variable_id):
 
 
 def required_channels(definition):
-    """The source channel name(s) a definition needs from a run's numeric
-    columns, so a caller can check availability before attempting to
-    compute it (see missing_channels())."""
+    """Returns the channels a definition needs."""
     if definition["type"] == TYPE_DIFFERENCE:
         return {definition["source_channel"], definition["source_channel2"]}
     if definition["type"] in (TYPE_RATE_OF_CHANGE, TYPE_ROLLING_STD, TYPE_CUMULATIVE_INTEGRAL):
@@ -193,14 +178,7 @@ def missing_channels(definition, available_columns):
 
 
 def compute_series(definition, columns_data, elapsed_seconds):
-    """columns_data: dict[channel_name, np.ndarray] for whatever numeric
-    columns the run actually has (already parsed to float, NaN for
-    unparseable). elapsed_seconds: np.ndarray, same length, seconds since
-    the run's first sample (used for rate_of_change/cumulative_integral).
-    Returns an np.ndarray the same length as the input series, or raises
-    DerivedVariableError if the definition can't be computed (missing
-    channel, bad expression, ...) -- never raises a raw exception type a
-    caller wouldn't know to expect."""
+    """Computes a derived channel from a run's columns."""
     missing = missing_channels(definition, columns_data.keys())
     if missing:
         raise DerivedVariableError(
@@ -243,7 +221,7 @@ def _rate_of_change(values, elapsed_seconds):
     values = np.asarray(values, dtype=float)
     t = np.asarray(elapsed_seconds, dtype=float)
     dt = np.diff(t, prepend=t[0] - 1.0 if len(t) else 0.0)
-    dt[dt == 0] = np.nan  # avoid divide-by-zero; result is NaN at that point, not inf
+    dt[dt == 0] = np.nan
     dv = np.diff(values, prepend=values[0] if len(values) else 0.0)
     return dv / dt
 

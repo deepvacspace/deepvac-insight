@@ -1,5 +1,4 @@
-"""Observer tools: read an event with its context, report on it, and propose a
-stop or setpoint as an agent request."""
+"""Observer tools."""
 
 from app.api.chambers import ChamberLinks
 from app.api.worker_tools import WorkerTools, public_request
@@ -89,9 +88,9 @@ class ObserverTools:
         event = obs.report(event_id, summary, notify, message)
         result = obs.public(event)
         result["next"] = (
-            "Recorded in DeepVac Insight. The workflow notifies people with your message."
+            "Recorded in Deepvac Insight. The workflow notifies people with your message."
             if notify
-            else "Recorded in DeepVac Insight; nobody is notified."
+            else "Recorded in Deepvac Insight; nobody is notified."
         )
         return result
 

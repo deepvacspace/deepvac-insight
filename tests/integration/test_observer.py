@@ -1,4 +1,4 @@
-"""Observer: monitor events, push to the webhook and Observer tools."""
+"""Tests of the Observer."""
 
 import asyncio
 import json

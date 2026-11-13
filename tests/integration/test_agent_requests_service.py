@@ -1,5 +1,4 @@
-"""Agent requests: nothing an agent asks for runs until a person approves it,
-and an approved request is executed at most once."""
+"""Tests of agent requests and their approval."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -44,7 +43,7 @@ def test_approved_requests_are_claimed_once(deepvac_data_dir):
     svc.decide(request["id"], True, "Ana")
     assert [r["id"] for r in svc.approved_requests()] == [request["id"]]
     assert svc.claim(request["id"]) is True
-    assert svc.claim(request["id"]) is False  # a second executor gets nothing
+    assert svc.claim(request["id"]) is False
     svc.mark_done(request["id"], True, "setpoint job sent")
     done = svc.get_request(request["id"])
     assert (done["status"], done["result"]) == (svc.EXECUTED, "setpoint job sent")

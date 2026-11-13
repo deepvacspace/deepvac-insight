@@ -1,6 +1,4 @@
-"""Integration tests for app/services/derived_variables_service.py -- sqlite
-persistence for reusable derived-variable definitions plus their compute_series()
-math (difference, rate_of_change, rolling_std, cumulative_integral, custom)."""
+"""Tests of derived variables."""
 
 import numpy as np
 import pytest
@@ -85,7 +83,6 @@ def test_compute_series_rate_of_change():
     columns_data = {"temp": np.array([20.0, 22.0, 26.0, 26.0])}
     elapsed = np.array([0.0, 1.0, 2.0, 3.0])
     result = dv.compute_series(definition, columns_data, elapsed)
-    # dv/dt at each point vs. the previous sample: [NaN-ish first, 2, 4, 0]
     np.testing.assert_allclose(result[1:], [2.0, 4.0, 0.0])
 
 
@@ -98,7 +95,7 @@ def test_compute_series_rolling_std():
     }
     columns_data = {"temp": np.array([1.0, 2.0, 3.0, 4.0])}
     result = dv.compute_series(definition, columns_data, np.array([0.0, 1.0, 2.0, 3.0]))
-    assert np.isnan(result[0])  # only 1 sample so far -- undefined
+    assert np.isnan(result[0])
     assert result[1] == pytest.approx(float(np.std([1.0, 2.0], ddof=1)))
     assert result[2] == pytest.approx(float(np.std([1.0, 2.0, 3.0], ddof=1)))
     assert result[3] == pytest.approx(float(np.std([2.0, 3.0, 4.0], ddof=1)))
@@ -113,7 +110,6 @@ def test_compute_series_cumulative_integral():
     columns_data = {"power": np.array([2.0, 2.0, 2.0])}
     elapsed = np.array([0.0, 1.0, 2.0])
     result = dv.compute_series(definition, columns_data, elapsed)
-    # trapezoidal integral of a constant 2.0 over [0,1,2] -> cumulative [0, 2, 4]
     np.testing.assert_allclose(result, [0.0, 2.0, 4.0])
 
 
@@ -132,10 +128,6 @@ def test_compute_series_custom_expression():
 
 
 def test_compute_series_custom_expression_with_whitelisted_function():
-    # Regression: safe_eval.referenced_names() must not treat a function
-    # name like `sqrt` (the func of a Call node, itself an ast.Name) as a
-    # required source channel -- that would make every custom expression
-    # using a whitelisted function permanently "unavailable".
     definition = {"name": "rms_error", "type": dv.TYPE_CUSTOM, "expression": "sqrt(abs(temp))"}
     assert dv.required_channels(definition) == {"temp"}
     columns_data = {"temp": np.array([-16.0, 4.0])}

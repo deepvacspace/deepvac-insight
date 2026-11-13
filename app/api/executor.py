@@ -1,8 +1,4 @@
-"""Runs approved agent requests: polls agent_requests_service and sends each
-approved request to its chamber's PLC, once, recording the outcome. Then
-follows the job an executed setpoint or program started until it ends
-(finished, stopped, alarm, replaced by another job), so the chat can tell
-the crew what became of it."""
+"""Sends approved agent requests to their chamber."""
 
 import logging
 import threading
@@ -16,8 +12,8 @@ from app.services.plc_gate import STATUS_NAMES
 log = logging.getLogger(__name__)
 
 JOB_KINDS = ("setpoint", "program")
-START_TIMEOUT_S = 60.0  # a job the PLC hasn't reported running by then is given up on
-CLOCK_SLACK_S = 2.0  # PLC state values arrive about once a second
+START_TIMEOUT_S = 60.0
+CLOCK_SLACK_S = 2.0
 
 
 class RequestExecutor:
@@ -45,13 +41,13 @@ class RequestExecutor:
         done = 0
         for request in requests_service.approved_requests():
             if not requests_service.claim(request["id"]):
-                continue  # another executor took it
+                continue
             try:
                 result = execute_request(self.links, request)
                 job = requests_service.JOB_STARTING if request["kind"] in JOB_KINDS else None
                 requests_service.mark_done(request["id"], True, result, job)
                 log.info("agent request %s executed: %s", request["id"], result)
-            except Exception as exc:  # recorded on the request for the operator and the agent
+            except Exception as exc:
                 requests_service.mark_done(request["id"], False, f"failed: {exc}")
                 log.warning("agent request %s failed: %s", request["id"], exc)
             done += 1
@@ -70,7 +66,6 @@ class RequestExecutor:
     def _follow(self, request: dict, jobs: list[dict], now: float) -> None:
         rid = request["id"]
         sent_at = requests_service.epoch(request["executed_at"])
-        # a later agent job on the same chamber takes over (the PLC may go from work to work)
         later = [j for j in jobs if j["id"] > rid and j["chamber_id"] == request["chamber_id"]]
         if later:
             requests_service.set_job_state(
@@ -82,7 +77,7 @@ class RequestExecutor:
         chamber = self.links.resolve(request["chamber_id"])
         snap = self.links.client(chamber, wait=False).snapshot()
         if not snap.connected or snap.values_at is None or snap.values_at < sent_at:
-            return  # nothing from the PLC since the job was sent
+            return
         working = snap.status == STATUS_NAMES[2]
         if request["job_state"] == requests_service.JOB_STARTING:
             started = snap.job_started_at
@@ -90,7 +85,6 @@ class RequestExecutor:
                 begun = started if started and started >= sent_at - CLOCK_SLACK_S else sent_at
                 requests_service.set_job_state(rid, requests_service.JOB_RUNNING, started_at=begun)
             elif snap.job_ended_at and snap.job_ended_at >= sent_at - CLOCK_SLACK_S:
-                # ran and ended between two polls
                 requests_service.set_job_state(
                     rid, self._ended(snap.status), started, snap.job_ended_at
                 )
@@ -99,7 +93,6 @@ class RequestExecutor:
             return
         begun = requests_service.epoch(request["job_started_at"]) or sent_at
         if snap.job_started_at and snap.job_started_at > begun + CLOCK_SLACK_S:
-            # another job (the operator's) started after this one
             requests_service.set_job_state(
                 rid, requests_service.JOB_REPLACED, ended_at=snap.job_started_at
             )

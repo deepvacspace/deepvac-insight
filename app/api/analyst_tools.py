@@ -1,14 +1,4 @@
-"""Analyst tools: read-only questions about recorded runs.
-
-All numbers come from the run database and app.core.analysis (the port of
-control2-client's Analysis Core), never from the model. Results are kept
-small: an LLM reads them. Nothing here reaches a chamber.
-
-The export_* tools write files into Insight's reports folder, with DeepVac
-Control's export options (app/services/run_export.py): chart images, data,
-comparison CSV, experiment reports (PDF / HTML) and bundles. They return the
-file's path and a file:// link the chat can open.
-"""
+"""Analyst tools: read-only questions about recorded runs."""
 
 import math
 from datetime import datetime
@@ -38,7 +28,7 @@ RANK_METRICS = {
 
 
 def n(value, digits: int = 5):
-    """JSON-friendly number: NaN / inf -> None, floats to `digits` significant digits."""
+    """Rounds a number for JSON, or None when not finite."""
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -54,7 +44,7 @@ def _local(epoch: float) -> str:
 
 
 def _time_range(start: str, end: str) -> tuple[float, float]:
-    """Local times "YYYY-MM-DD[ HH:MM[:SS]]"; a bare day is the whole day. Empty: today so far."""
+    """Parses a local time range."""
 
     def parse(text, end_of_day):
         text = text.strip().replace("T", " ")
@@ -82,7 +72,7 @@ STATUS_NAMES = {1: "idle", 2: "work", 3: "finish", 4: "alarm"}
 
 
 def _changes(times, column, is_status: bool, limit: int = 20) -> list[dict]:
-    """When a slowly changing channel (status, setpoint) took a new value."""
+    """Returns when a slowly changing channel took a new value."""
     changes, last = [], None
     for t, v in zip(times, column, strict=True):
         if v != v:
@@ -139,8 +129,6 @@ def _kpis(k: ControlKpis) -> dict:
 class AnalystTools:
     def __init__(self, catalogue: RunCatalogue | None = None):
         self.catalogue = catalogue or RunCatalogue()
-
-    # ------------------------------------------------------------ runs
 
     def list_runs(
         self, search: str = "", group: str = "", limit: int = 20, newest_first: bool = True
@@ -237,8 +225,6 @@ class AnalystTools:
             "cycles": c.cycles,
         }
         if a.has_control:
-            # with a ramp the whole-run MAE measures tracking; without one it mostly measures the distance
-            # to the first setpoint, so the tail MAE is the headline
             result["kpis"] = {
                 "headline": "mae" if a.run.has_ramp() else "tail_mae",
                 **_kpis(a.run.overall),
@@ -465,12 +451,12 @@ class AnalystTools:
         if not manifest or not manifest.get("events"):
             return {
                 "run": entry.ref,
-                "note": "This run has no recorded events (only runs recorded by DeepVac Control carry them).",
+                "note": "This run has no recorded events (only runs recorded by Deepvac Control carry them).",
             }
         start = entry.start_epoch if math.isfinite(entry.start_epoch) else None
         events = []
         for e in manifest["events"][: max(1, min(int(limit), 200))]:
-            t = e.get("t")  # epoch s
+            t = e.get("t")
             events.append(
                 {
                     "at_s": n(t - start) if start is not None and t is not None else None,
@@ -479,8 +465,6 @@ class AnalystTools:
                 }
             )
         return {"run": entry.ref, "count": len(manifest["events"]), "events": events}
-
-    # ------------------------------------------------------------ exports (files)
 
     def _export_run(
         self, entry: CatalogueEntry, with_samples: bool = False
@@ -492,7 +476,7 @@ class AnalystTools:
         stem = f"run{entry.number}_{run_export.safe_name(entry.name)}_{what}_{datetime.now():%Y%m%d_%H%M%S}"
         path = common.REPORTS_DIR / f"{stem}.{extension}"
         copy = 2
-        while path.exists():  # two exports in the same second
+        while path.exists():
             path = common.REPORTS_DIR / f"{stem}_{copy}.{extension}"
             copy += 1
         return path
@@ -592,8 +576,6 @@ class AnalystTools:
         )
         return {"run": entry.ref, **self._file(path)}
 
-    # ------------------------------------------------------------ full-day recordings
-
     def list_recordings(self, chamber: str = "") -> dict:
         days = day_recorder.list_days(chamber or None)
         if chamber and not days:
@@ -622,7 +604,7 @@ class AnalystTools:
     def get_recording(
         self, chamber: str = "", start: str = "", end: str = "", channels: list[str] | None = None
     ) -> dict:
-        """What a chamber did between two local times (or a whole day), from its day recordings."""
+        """Returns what a chamber did between two times."""
         chambers = sorted({d["chamber"] for d in day_recorder.list_days()})
         if not chamber:
             if len(chambers) != 1:
@@ -687,9 +669,9 @@ class AnalystTools:
         start_c: float = 27.0,
         duration_min: float = 20.0,
     ) -> dict:
-        """Closed-loop GRU digital twin (Insight's simulator): KPIs of a PID setting, nothing sent to a chamber."""
+        """Simulates a PID setting on the digital twin and returns its KPIs."""
 
-        result = data_service.simulate_gru_run(
+        result = data_service.simulate_twin_run(
             {
                 "kp": kp,
                 "ki": ki,
@@ -705,7 +687,7 @@ class AnalystTools:
         points = result.get("points") or []
         final = points[-1]["values"] if points else {}
         return {
-            "source": "GRU digital twin (simulation, not a measurement)",
+            "source": "LSTM digital twin (simulation, not a measurement)",
             "inputs": {
                 "kp": kp,
                 "ki": ki,

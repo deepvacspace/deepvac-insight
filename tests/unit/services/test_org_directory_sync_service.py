@@ -1,5 +1,4 @@
-"""Tests for org_directory_sync_service's read-only pull, against a fake
-hub response standing in for licensing_client.signed_request_json."""
+"""Tests of the organization directory sync."""
 
 import pytest
 

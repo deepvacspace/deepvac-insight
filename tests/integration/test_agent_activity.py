@@ -1,5 +1,4 @@
-"""The agents' activity feed (app/api/activity.py) behind GET /activity: what the
-chat shows while the crew works."""
+"""Tests of the agents' activity feed."""
 
 import time
 

@@ -1,6 +1,4 @@
-"""The agent API's bearer token: DEEPVAC_AGENT_API_TOKEN, or generated once into
-data/agent_api_token. Kept apart from server.py so the app can read it
-without loading the server."""
+"""The agent API's bearer token."""
 
 import os
 import secrets

@@ -1,8 +1,4 @@
-"""User-created chart annotations and variable rules for runs, in their own
-local SQLite database. Each row is linked to the run it was made on (by
-run key) and the user who made it (id + a denormalized name snapshot for
-display, so authorship still reads correctly even if that user later
-renames themselves)."""
+"""User-created chart annotations and variable rules for runs, in their own local SQLite database."""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -13,9 +9,7 @@ ANNOTATIONS_DB = DATA_DIR / "deepvac_annotations.sqlite3"
 
 
 def connect_annotations(db_path=None):
-    """db_path overrides ANNOTATIONS_DB for this call only -- see
-    auth_service.connect_auth()'s docstring for the module-level-constant
-    seam every other function in this file uses implicitly instead."""
+    """Opens the annotations database."""
     path = db_path or ANNOTATIONS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -151,7 +145,7 @@ def add_annotation(
 
 
 def delete_annotation(annotation_id):
-    """Deletes an annotation, remembering a tombstone if it was shared."""
+    """Deletes an annotation."""
     conn = connect_annotations()
     try:
         row = conn.execute(
@@ -258,7 +252,7 @@ def add_rule(
 
 
 def delete_rule(rule_id):
-    """Deletes a variable rule, remembering a tombstone if it was shared."""
+    """Deletes a variable rule."""
     conn = connect_annotations()
     try:
         row = conn.execute(

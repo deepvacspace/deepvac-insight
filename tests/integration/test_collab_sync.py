@@ -1,5 +1,4 @@
-"""End-to-end tests of the local-network collaboration host: a real TLS server
-on loopback with simulated peers pairing and syncing shared data."""
+"""End-to-end tests of the collaboration host."""
 
 import pytest
 

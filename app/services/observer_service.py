@@ -1,5 +1,4 @@
-"""Observer events: configuration, storage in data/deepvac_observer.sqlite3, the
-Observer's reports and the push to the n8n webhook."""
+"""Observer events: configuration, storage and webhook push."""
 
 import json
 import sqlite3
@@ -162,7 +161,7 @@ def _row(row):
 
 
 def record(kind, severity, title, facts=None, chamber=None, key=None, push=False):
-    """Records an event; None if one with the same key exists."""
+    """Records an event unless one with the same key exists."""
     if kind not in KINDS:
         raise ObserverError(f"Unknown event kind '{kind}'.")
     if severity not in SEVERITIES:
@@ -348,7 +347,7 @@ def public(event):
 
 
 def deliver(event, url, token, timeout=PUSH_TIMEOUT_S):
-    """POSTs an event to the Observer webhook; returns '' or the error."""
+    """Sends an event to the Observer webhook."""
     body = json.dumps({"event": public(event)}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         url,

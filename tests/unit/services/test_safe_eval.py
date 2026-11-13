@@ -1,5 +1,4 @@
-"""Tests for app/services/safe_eval.py -- the restricted AST-based formula
-evaluator used by custom derived variables."""
+"""Tests of the expression evaluator."""
 
 import numpy as np
 import pytest

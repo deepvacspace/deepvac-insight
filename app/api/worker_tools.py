@@ -1,12 +1,4 @@
-"""Worker tools: the chamber now, and requests to change it.
-
-Reading (live status, PLC settings, programs) goes straight to the PLC.
-Every action -- a setpoint, a program, a stop -- only creates a request in
-agent_requests_service; it reaches the chamber after a person approves it in
-the app (see executor.py). Limits are checked here before a request exists.
-wait_for_request lets the worker wait, within its turn, for the operator's
-decision; what happens later reaches the crew through the app's chat.
-"""
+"""Worker tools: chamber status and change requests."""
 
 import time
 
@@ -14,13 +6,13 @@ from app.api import control_settings
 from app.api.analyst_tools import n
 from app.api.chambers import ChamberError, ChamberLinks
 from app.services import agent_requests_service as requests_service
-from app.services import plc_gate, plc_programs, test_profiles_service
+from app.services import experiment_recorder, plc_gate, plc_programs, test_profiles_service
 
-STALE_AFTER_S = 15.0  # live values older than this are reported as stale
+STALE_AFTER_S = 15.0
 MAX_RAMP_C_PER_MIN = 20.0
 MAX_HOLD_MIN = 7 * 24 * 60
 WAIT_DEFAULT_S = 120
-WAIT_MAX_S = 180  # below the n8n chamber node's tool timeout (200 s)
+WAIT_MAX_S = 180
 WAIT_POLL_S = 1.0
 DECIDED = (
     requests_service.EXECUTED,
@@ -34,8 +26,6 @@ class WorkerTools:
     def __init__(self, links: ChamberLinks | None = None, requested_by: str = "worker agent"):
         self.links = links or ChamberLinks()
         self.requested_by = requested_by
-
-    # ------------------------------------------------------------ reading
 
     def list_chambers(self) -> dict:
         return {
@@ -139,8 +129,6 @@ class WorkerTools:
             programs.append(item)
         return {"programs": programs}
 
-    # ------------------------------------------------------------ requests
-
     def request_setpoint(
         self,
         temperature_c: float,
@@ -214,7 +202,7 @@ class WorkerTools:
         return public_request(request)
 
     def wait_for_request(self, request_id: int, timeout_s: float = WAIT_DEFAULT_S) -> dict:
-        """Waits until the request is decided and sent (or rejected, failed, expired)."""
+        """Waits until a request is decided."""
         timeout_s = max(1.0, min(float(timeout_s), WAIT_MAX_S))
         started = time.monotonic()
         while True:
@@ -230,7 +218,7 @@ class WorkerTools:
         public["waited_s"] = round(waited)
         if request["status"] not in DECIDED:
             public["next"] = (
-                "The operator hasn't decided yet. Don't wait or poll again: DeepVac Insight tells "
+                "The operator hasn't decided yet. Don't wait or poll again: Deepvac Insight tells "
                 "the chat when the request is decided and when its job ends."
             )
         elif request.get("job_state") in requests_service.JOB_OPEN:
@@ -256,14 +244,14 @@ class WorkerTools:
         )
         public = public_request(request)
         public["next"] = (
-            "Nothing has been sent to the chamber. An operator must approve this request in DeepVac "
+            "Nothing has been sent to the chamber. An operator must approve this request in Deepvac "
             "Insight (Agent Requests); wait for the decision with wait_for_request."
         )
         return public
 
 
 def public_request(r: dict) -> dict:
-    """What agents (and the chat) see of a request."""
+    """Returns the public view of a request."""
     return {
         key: r[key]
         for key in (
@@ -286,7 +274,7 @@ def public_request(r: dict) -> dict:
 
 
 def execute_request(links: ChamberLinks, request: dict) -> str:
-    """Sends one approved request to its chamber's PLC; returns what was sent. Raises on failure."""
+    """Sends an approved request to its chamber."""
     chamber = links.resolve(request["chamber_id"])
     client = links.client(chamber)
     settings = control_settings.load()
@@ -305,6 +293,12 @@ def execute_request(links: ChamberLinks, request: dict) -> str:
             p.get("ramp_rate_c_per_min"),
             p["hold_minutes"] * 60.0 if p.get("hold_minutes") else None,
         )
+        experiment_recorder.announce_job(
+            chamber["name"],
+            f"Agent setpoint {p['temperature_c']} °C",
+            "agent_setpoint",
+            details={"request": request.get("id"), "reason": request.get("reason")},
+        )
         client.send_job(plc_gate.PROG_TYPE_SETPOINT, intervals, params_spec)
         return f"setpoint job sent ({len(intervals)} interval(s))"
     if request["kind"] == "program":
@@ -315,6 +309,13 @@ def execute_request(links: ChamberLinks, request: dict) -> str:
             raise ChamberError(f"Program '{p['program']}' is gone.")
         intervals, cycle = plc_programs.program_for_profile(
             profile, control_settings.enable_flags(settings)
+        )
+        experiment_recorder.announce_job(
+            chamber["name"],
+            f"Agent program {profile['name']}",
+            "agent_program",
+            test_profile=profile["name"],
+            details={"request": request.get("id"), "reason": request.get("reason")},
         )
         client.send_job(plc_gate.PROG_TYPE_PROG, intervals, params_spec, cycle)
         return f"program job sent ({len(intervals)} intervals)"

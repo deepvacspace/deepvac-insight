@@ -1,6 +1,4 @@
-"""Pulls the organization member directory from Deepvac Hub. Read-only:
-this never pushes local data, it only replaces the local cache with
-whatever Hub currently reports."""
+"""Pulls the organization member directory from Deepvac Hub."""
 
 from __future__ import annotations
 

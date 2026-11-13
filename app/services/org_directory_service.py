@@ -1,5 +1,4 @@
-"""Local read-only cache of the organization member directory pulled from
-Deepvac Hub, in its own local SQLite database."""
+"""Local cache of the organization member directory."""
 
 import sqlite3
 from datetime import datetime, timezone

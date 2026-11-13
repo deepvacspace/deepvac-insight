@@ -1,9 +1,4 @@
-"""Run catalogue for the agent tools: numbering, references and cached analyses.
-
-Runs are numbered #1, #2, ... by start time, oldest first, like the
-control2-client assistant, and can also be referred to by database key,
-title, "latest" or "previous".
-"""
+"""Run catalogue for the agent tools."""
 
 import json
 import math
@@ -42,7 +37,7 @@ def _start_epoch(row) -> float:
             return parsed.timestamp()
         except ValueError:
             pass
-    return -math.inf  # unknown start: numbered first
+    return -math.inf
 
 
 _RUN_TOKEN = re.compile(r"(\d{10}_[0-9a-f]{8})")
@@ -54,13 +49,7 @@ def _token(row) -> str | None:
 
 
 def _without_duplicates(rows):
-    """Drops folder-synced runs that are also in the database as imported runs.
-
-    control2-client imported Insight's run history, so after its database is
-    merged here the same experiment exists twice: keep the imported copy,
-    which has the manifest (channel units, events). The folder row stays in
-    the database; sync_cache() would recreate it anyway.
-    """
+    """Drops folder-synced runs that are also in the database as imported runs."""
     imported = {(_token(r), r["start_time"]) for r in rows if r["source"] != "folder" and _token(r)}
     return [
         r
@@ -123,7 +112,7 @@ class RunCatalogue:
         return entries
 
     def entry_for_key(self, key: str) -> CatalogueEntry:
-        """The run with this database key; a folder copy hidden from the numbering gets number 0."""
+        """Returns the run with a database key."""
         for entry in self.entries():
             if entry.key == key:
                 return entry
@@ -174,7 +163,7 @@ class RunCatalogue:
         )
 
     def load(self, entry: CatalogueEntry) -> tuple[ExperimentInput, ExperimentAnalysis]:
-        """Samples and analysis of a run (cached; analysed with the run's variable rules)."""
+        """Returns a run's samples and analysis."""
         with self._lock:
             if entry.key in self._analyses:
                 self._analyses.move_to_end(entry.key)
@@ -225,7 +214,7 @@ class RunCatalogue:
     def export_run(
         self, entry: CatalogueEntry, with_samples: bool = False, title: str | None = None
     ) -> run_export.RunExport:
-        """Everything run_export needs for this run (with_samples: the stored rows, for a bundle)."""
+        """Returns what run_export needs for a run."""
         from app.api import control_settings
 
         data, a = self.load(entry)

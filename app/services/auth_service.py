@@ -1,6 +1,4 @@
-"""User accounts: creation, authentication, profile updates, and
-remember-me session tokens. Stored in their own local SQLite database,
-separate from the run-data cache."""
+"""User accounts and session tokens."""
 
 import hashlib
 import hmac
@@ -37,7 +35,7 @@ def _ensure_hub_link_columns(conn):
 
 
 def connect_auth(db_path=None):
-    """Opens (and initializes) the auth database connection."""
+    """Opens the auth database."""
     path = db_path or AUTH_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)

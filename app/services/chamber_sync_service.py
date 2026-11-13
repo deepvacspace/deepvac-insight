@@ -1,6 +1,4 @@
-"""Syncs the local chamber registry with Deepvac Hub: pushes local-only
-chambers up, pulls hub-only chambers down, and surfaces conflicts for
-chambers that exist on both sides with different content."""
+"""Syncs the chamber registry with Deepvac Hub."""
 
 from __future__ import annotations
 
@@ -110,8 +108,7 @@ def sync():
 
 
 def resolve_conflict(conflict, keep):
-    """keep is "local" (push local content over hub's) or "hub" (overwrite
-    the local chamber with hub's content)."""
+    """Resolves a sync conflict in favour of the local or hub chamber."""
     if keep == "local":
         _replace_hub_chamber(conflict.hub_id, conflict.local)
         chambers_service.touch_hub_synced(conflict.chamber_id)

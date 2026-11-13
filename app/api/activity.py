@@ -1,14 +1,4 @@
-"""What the agents are doing right now: every tool call through the agent API,
-described in plain words ("Analyst: comparing runs #12, #13").
-
-Kept in memory (the last few hundred calls) and served at GET /activity, so
-the chat in the app can show the crew's progress while it works on an
-answer. A call that returned a chamber request also records its id and the
-state the agent saw ("request" / "request_state"), so the chat knows which
-requests this conversation made and what the crew already knows of them;
-likewise for test campaigns ("campaign" / "campaign_news").
-Nothing here is stored.
-"""
+"""Live record of the agents' tool calls, described in plain words."""
 
 import itertools
 import threading
@@ -112,7 +102,7 @@ def describe(tool: str, args: dict) -> str:
             f"drafting a {a.get('level', 'qualification')} campaign for {a.get('article', 'the article')}"
         ),
         "submit_campaign": lambda: (
-            f"submitting campaign {a.get('campaign_id')} for approval (Campaigns page)"
+            f"submitting campaign {a.get('campaign_id')} for approval (AI Agents page)"
         ),
         "get_campaign": lambda: (
             f"checking campaign {a['campaign_id']}"
@@ -122,7 +112,7 @@ def describe(tool: str, args: dict) -> str:
         "list_campaigns": lambda: "listing the campaigns",
         "wait_for_campaign": lambda: f"following campaign {a.get('campaign_id')}",
         "recommend": lambda: (
-            f"recommending '{a.get('option')}' at the hold point of campaign {a.get('campaign_id')}"
+            f"recommending '{a.get('option')}' at the decision point of campaign {a.get('campaign_id')}"
         ),
         "get_report_facts": lambda: f"reading the results of campaign {a.get('campaign_id')}",
         "issue_report": lambda: f"writing the report of campaign {a.get('campaign_id')}",
@@ -166,8 +156,7 @@ def started(agent: str, tool: str, args: dict) -> int:
 def finished(
     event_id: int, ok: bool, request: dict | None = None, campaign: dict | None = None
 ) -> None:
-    """request: the chamber request the call returned (worker_tools.public_request), if any;
-    campaign: the test campaign it returned (campaign_service.public), if any."""
+    """Records the end of a tool call."""
     with _lock:
         for event in reversed(_events):
             if event["id"] == event_id:
@@ -183,7 +172,7 @@ def finished(
 
 
 def request_state(request: dict) -> str:
-    """'status' or 'status/job_state': what changed about a request, for the chat."""
+    """Returns what changed about a request."""
     job = request.get("job_state")
     return f"{request.get('status')}/{job}" if job else str(request.get("status"))
 

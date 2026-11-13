@@ -280,7 +280,7 @@ def _request_json(
         headers.update(extra_headers)
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(  # noqa: S310 (local dev API)
+        with urllib.request.urlopen(  # noqa: S310
             req, timeout=timeout, context=ssl_context
         ) as resp:
             return json.loads(resp.read().decode("utf-8"))
