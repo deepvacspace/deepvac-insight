@@ -1,4 +1,4 @@
-"""Test profiles as PLC programs (app/services/plc_programs.py)."""
+"""Tests of test profiles as PLC programs."""
 
 import pytest
 

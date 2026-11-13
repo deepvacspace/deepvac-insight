@@ -1,20 +1,4 @@
-"""Imports control2-client's experiment data and chamber configuration into Insight.
-
-What it copies (never deletes anything; re-running it skips what is already here):
-- runs: every row of control2-client's deepvac_runs.sqlite3 whose key Insight
-  doesn't have (samples, stored analysis, manifest, identity), source unchanged;
-- test profiles: by name, with their steps and PLC program (program_json);
-- the chamber PLC (settings.json "tcp_server") as a chamber with protocol "plc";
-- settings.json itself, as data/control_settings.json: the chamber's state,
-  program, alarm and PLC settings definitions the PLC gate and the agent API use;
-- the event log (data/event/actions.dat: application, operator and PLC messages)
-  into data/deepvac_control_log.sqlite3, for the Brain (scripts/build_brain.py).
-
-Before writing, each Insight database it touches is copied to
-data/backups/<name>/<name>_before_control_import_<time>.sqlite3.
-
-    uv run python scripts/import_control_data.py --control ../../control2-client [--dry-run]
-"""
+"""Imports control2-client's experiment data and chamber configuration into Insight."""
 
 import argparse
 import json
@@ -37,7 +21,7 @@ CONTROL_SETTINGS_FILE = "control_settings.json"
 
 
 def find_data_dir(control: Path) -> Path:
-    """The C++ app keeps its databases next to its executable (build/<kit>/data)."""
+    """Finds Deepvac Control's data folder."""
     candidates = [control / "data"] + sorted((control / "build").glob("*/data"))
     for candidate in candidates:
         if (candidate / "deepvac_runs.sqlite3").exists():
@@ -68,7 +52,7 @@ def import_runs(source_db: Path, dry_run: bool) -> tuple[int, int]:
         dst = sqlite3.connect(f"file:{data_service.cache_path()}?mode=ro", uri=True)
         dst.row_factory = sqlite3.Row
     else:
-        dst = data_service.connect_cache()  # applies the schema migrations
+        dst = data_service.connect_cache()
     try:
         dst_columns = [r["name"] for r in dst.execute("PRAGMA table_info(runs)")]
         src_columns = [r["name"] for r in src.execute("PRAGMA table_info(runs)")]
@@ -142,7 +126,6 @@ def import_test_profiles(source_db: Path, dry_run: bool) -> tuple[int, int]:
 
 def load_control_settings(settings_path: Path) -> dict:
     text = settings_path.read_bytes().decode("utf-8", errors="replace")
-    # the C++ settings file has "°" saved in a single-byte code page: restore it
     return json.loads(text.replace("�", "°"))
 
 

@@ -1,6 +1,4 @@
-"""PLC gate protocol (app/services/plc_gate.py): byte layouts must match
-control2-client's GateTcp / StreamBuffer / ProgramModel::makeSendData, since
-the same PLC program reads them."""
+"""Tests of the PLC gate protocol."""
 
 import struct
 
@@ -27,7 +25,6 @@ def test_package_layout_and_crc_check():
     assert packet[:4] == bytes([0xAA, 0x55, 0xBB, 0x77])
     assert struct.unpack_from("<H", packet, 4)[0] == len(body)
     assert packet[6 : 6 + len(body)] == body
-    # the receiver's check: CRC over size + body + CRC is zero
     assert pg.crc16(packet[4:]) == 0
 
 
@@ -39,7 +36,7 @@ def test_reader_splits_joins_and_resynchronises():
     reader = pg.PacketReader()
     stream = b"\x00junk" + a + bytes(corrupt) + b
     bodies = []
-    for i in range(0, len(stream), 3):  # arrives in small pieces
+    for i in range(0, len(stream), 3):
         bodies += reader.feed(stream[i : i + 3])
     assert bodies == [b"\x06", pg.encode_text_cmd("get_states")]
     assert reader.crc_errors == 1

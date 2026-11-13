@@ -1,7 +1,4 @@
-"""Integration tests for app/services/tcp_client.py's ChamberConnection --
-send_command() (the outbound protocol Test Profiles use to push setpoints),
-exercised against a real local QTcpServer loopback rather than a mock, so
-what's asserted is genuinely the bytes written to the wire."""
+"""Tests of the chamber TCP client."""
 
 import json
 
@@ -12,12 +9,6 @@ from app.services.tcp_client import ChamberConnection
 
 pytestmark = pytest.mark.integration
 
-# Captured at import time, before any test's fixtures run -- conftest.py's
-# autouse no_real_network fixture monkeypatches connect_to_host to a no-op
-# for every other test in the suite (so nothing accidentally opens a real
-# socket). This module is the one deliberate exception: it exists to prove
-# the real wire protocol, so real_connect_to_host below restores the
-# genuine implementation for just these tests.
 _real_connect_to_host = ChamberConnection.connect_to_host
 
 

@@ -1,8 +1,4 @@
-"""Integration test for the OPC UA server (app/services/opc_broadcast_server.py)
--- exercised against a real asyncua Client over loopback, not a mock, so
-what's asserted is a genuine OPC UA read of a published variable node.
-Each chamber gets its own sub-object node under ChamberVariables, keyed by
-the chamber_label passed to broadcast()."""
+"""Tests of the OPC UA server."""
 
 import socket
 import sys
@@ -50,10 +46,6 @@ def test_start_broadcast_stop_roundtrip(qtbot, opc_server):
         objects = client.get_objects_node()
 
         def _chamber_node(label):
-            # ChamberVariables/<label> (and each variable under it) is only
-            # added once the first sample for that chamber arrives, so
-            # get_child() legitimately errors (BadNoMatch) until then --
-            # that's the condition being waited on, not a real failure.
             try:
                 return objects.get_child([f"{idx}:ChamberVariables", f"{idx}:{label}"])
             except ua.UaStatusCodeError:
@@ -73,13 +65,9 @@ def test_start_broadcast_stop_roundtrip(qtbot, opc_server):
         qtbot.waitUntil(lambda: _temp_value(chamber1) == 42.5, timeout=5000)
         assert chamber1.get_child([f"{idx}:temp_ref"]).get_value() == 45.0
 
-        # The second chamber gets its own, independent set of nodes -- not
-        # overwriting the first chamber's values.
         qtbot.waitUntil(lambda: _temp_value(chamber2) == 10.0, timeout=5000)
         assert chamber2.get_child([f"{idx}:temp_ref"]).get_value() == 15.0
 
-        # A later sample updates the same chamber's nodes in place rather
-        # than creating new ones.
         opc_server.broadcast("Chamber 1", {"temp": 50.0, "temp_ref": 45.0})
         qtbot.waitUntil(lambda: _temp_value(chamber1) == 50.0, timeout=5000)
         assert _temp_value(chamber2) == 10.0
@@ -96,17 +84,7 @@ def test_start_broadcast_stop_roundtrip(qtbot, opc_server):
 def test_start_reports_error_when_port_already_bound(qtbot, opc_server):
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if sys.platform == "win32":
-        # Windows lets a new listener silently steal a port from an active
-        # listener that didn't request this (a well-known asyncio/Windows
-        # footgun -- SO_REUSEADDR is enabled by asyncio's server by
-        # default), so a plain bind()+listen() here wouldn't reliably
-        # conflict. SO_EXCLUSIVEADDRUSE opts this socket out of that.
         blocker.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-    # 0.0.0.0, not 127.0.0.1: the server always binds the wildcard address
-    # (see opc_broadcast_server.py's set_endpoint call), and on Windows a
-    # specific-address listener with SO_EXCLUSIVEADDRUSE does not actually
-    # conflict with a later wildcard bind on the same port -- confirmed by
-    # hand; only matching the wildcard address reproduces a real conflict.
     blocker.bind(("0.0.0.0", 0))
     blocker.listen(1)
     port = blocker.getsockname()[1]

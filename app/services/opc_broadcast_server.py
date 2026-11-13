@@ -1,29 +1,4 @@
-"""A real OPC UA server broadcasting every currently-connected chamber's
-live variables.
-
-Backed by asyncua: a spec-compliant OPC UA server that any standard OPC UA
-client (UAExpert, an asyncua/python-opcua client, etc.) can browse and
-subscribe to -- not just an app-specific wire format.
-
-asyncua is asyncio-native and this app runs on Qt's event loop, so the
-server runs on its own thread with its own asyncio event loop. Samples
-arrive on the Qt thread (one ChamberSession.sample_received per connected
-chamber, see services/chamber_session.py -- wired to broadcast() in
-main_window.py) and are handed to the asyncio thread with
-asyncio.run_coroutine_threadsafe(); all node access happens on the server
-thread, never on the Qt thread. Each connected chamber gets its own
-sub-object node under <namespace>/Objects/ChamberVariables/<chamber name>,
-created the first time a sample from that chamber is seen; each distinct
-sample key becomes a variable node under that chamber's object, updated in
-place after that. One server instance broadcasts every chamber currently
-connected -- there is no per-chamber server.
-
-Security: only SecurityPolicyType.NoSecurity / anonymous auth is offered.
-Basic128Rsa15/Basic256Sha256 and username+password auth need a certificate
-and a credential store this app doesn't have yet -- the OPC page's
-Security/Auth fields (app/views/opc.py) are kept for a future
-implementation and are not enforced here.
-"""
+"""OPC UA server broadcasting the connected chambers' live variables."""
 
 import asyncio
 import contextlib
@@ -32,11 +7,11 @@ import threading
 from asyncua import Server, ua
 from PySide6.QtCore import QObject, QTimer, Signal
 
-_POLL_INTERVAL_S = 0.5  # how often the server thread checks for stop + client count
+_POLL_INTERVAL_S = 0.5
 
 
 class OpcBroadcastServer(QObject):
-    started = Signal(int)  # port
+    started = Signal(int)
     stopped = Signal()
     client_count_changed = Signal(int)
     server_error = Signal(str)
@@ -51,12 +26,12 @@ class OpcBroadcastServer(QObject):
         self._start_error = None
         self._idx = None
         self._obj_node = None
-        self._chamber_nodes = {}  # chamber_label -> object node under ChamberVariables
-        self._var_nodes = {}  # (chamber_label, key) -> variable node
+        self._chamber_nodes = {}
+        self._var_nodes = {}
         self._running = threading.Event()
         self._last_client_count = 0
 
-        self._pending_samples = {}  # chamber_label -> latest sample, flushed on the timer below
+        self._pending_samples = {}
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(500)
         self._update_timer.timeout.connect(self._flush_pending_samples)
@@ -65,9 +40,7 @@ class OpcBroadcastServer(QObject):
         return self._running.is_set()
 
     def set_update_rate(self, interval_ms):
-        """Caps how often a cached sample is pushed to the OPC UA nodes --
-        safe to call while stopped (takes effect on the next start()) or
-        while running (takes effect on the timer's next tick)."""
+        """Sets how often samples are pushed to the OPC UA nodes."""
         self._update_timer.setInterval(max(1, int(interval_ms)))
 
     def start(self, port, namespace=""):
@@ -120,10 +93,6 @@ class OpcBroadcastServer(QObject):
         self.client_count_changed.emit(0)
 
     def broadcast(self, chamber_label: str, sample: dict):
-        # Called on the Qt thread every time a sample arrives for a given
-        # chamber; just cache it. _flush_pending_samples(), driven by the
-        # QTimer above (i.e. the configured update rate), is what actually
-        # pushes it to that chamber's nodes.
         self._pending_samples[chamber_label] = sample
 
     def _flush_pending_samples(self):
@@ -133,15 +102,13 @@ class OpcBroadcastServer(QObject):
         for chamber_label, sample in pending.items():
             asyncio.run_coroutine_threadsafe(self._write_sample(chamber_label, sample), self._loop)
 
-    # ── Server thread (asyncio) ─────────────────────────────────────────────
-
     def _thread_main(self, ready: threading.Event):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
             loop.run_until_complete(self._async_main(ready))
-        except Exception as exc:  # e.g. the port is already in use
+        except Exception as exc:
             self._start_error = str(exc)
             ready.set()
         finally:
@@ -152,7 +119,7 @@ class OpcBroadcastServer(QObject):
         server = Server()
         await server.init()
         server.set_endpoint(f"opc.tcp://0.0.0.0:{self._port}/deepvac/insight/")
-        server.set_server_name("DeepVac Insight OPC UA Server")
+        server.set_server_name("Deepvac Insight OPC UA Server")
         server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
         self._idx = await server.register_namespace(self.namespace)
         self._obj_node = await server.nodes.objects.add_object(self._idx, "ChamberVariables")

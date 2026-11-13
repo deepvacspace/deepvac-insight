@@ -1,30 +1,11 @@
-"""PLC gate: the chamber PLC's binary TCP protocol (port of control2-client's GateTcp).
+"""PLC gate: the chamber PLC's binary TCP protocol."""
 
-Packet:  AA 55 BB 77 | body size (u16 LE) | body | CRC-16 (big endian)
-         The CRC (poly 0x1021, init 0xFFFF) covers the size and the body; a
-         receiver recomputes it over size + body + CRC and expects 0.
-Body:    one code byte, then the payload.
-
-Outgoing (app -> PLC)                    Incoming (PLC -> app)
-  0x01 text command (Pascal string)        0x01 state values: u8 count, count x f32 LE
-  0x02 settings map: u8 count,             0x02 state names: u8 count, Pascal strings
-       count x (Pascal string, f32 LE)     0x03 settings map (same shape as outgoing)
-  0x03 job (see encode_job)                0x04 configuration
-  0x04 force outputs                       0x05 alarm: u32 LE
-  0x05 pair: Pascal string, f32 LE         0x06 job finished
-                                           0x07 user message (Pascal string)
-                                           0x08 fitted components: u8 count, Pascal strings
-
-Text commands: "ka" (keep-alive, every 5 s), "get_states", "get_settings",
-"stop", "next", "confirm_alarm", "confirm_finish", "shutdown". The PLC program
-spells the two confirm commands "confrim_..."; send_text_cmd() fixes that.
-
-The protocol layer (functions) is pure; PlcGateClient runs the connection in a
-background thread, so it works headless (the agent API) and inside the app.
-"""
-
+import bisect
 import contextlib
+import dataclasses
+import itertools
 import logging
+import math
 import socket
 import struct
 import threading
@@ -36,14 +17,12 @@ log = logging.getLogger(__name__)
 
 PACKAGE_HEADER = bytes([0xAA, 0x55, 0xBB, 0x77])
 
-# outgoing message codes
 OUT_TEXT_CMD = 0x01
 OUT_SETTINGS_MAP = 0x02
 OUT_JOB = 0x03
 OUT_FORCE_OUT = 0x04
 OUT_PAIR = 0x05
 
-# incoming message codes
 IN_STATE_VALUES = 0x01
 IN_STATE_NAMES = 0x02
 IN_SETTINGS_MAP = 0x03
@@ -53,26 +32,22 @@ IN_JOB_FINISHED = 0x06
 IN_USER_MSG = 0x07
 IN_COMPONENTS = 0x08
 
-# job
-PROG_TYPE_SETPOINT = 1  # manual setpoint
-PROG_TYPE_PROG = 2  # program (test profile)
-AWAIT_BIT = 8  # interval flag: hold the setpoint for its duration
-RAMP_BIT = 9  # interval flag: ramp to the setpoint over the duration
-PARAM_TYPE_DURATION = 256  # Qt::UserRole in control_params "type"
-PARAM_TYPE_FLAGS = 257  # Qt::UserRole + 1
-LONG_TIME_S = 100 * 3600 - 1  # "until stopped" duration of a manual setpoint
+PROG_TYPE_SETPOINT = 1
+PROG_TYPE_PROG = 2
+AWAIT_BIT = 8
+RAMP_BIT = 9
+PARAM_TYPE_DURATION = 256
+PARAM_TYPE_FLAGS = 257
+LONG_TIME_S = 100 * 3600 - 1
 
-STATUS_NAMES = {1: "idle", 2: "work", 3: "finish", 4: "alarm"}  # status_condition values
+STATUS_NAMES = {1: "idle", 2: "work", 3: "finish", 4: "alarm"}
 STATUS_WORK = 2
 
 _PLC_SPELLING = {"confirm_alarm": "confrim_alarm", "confirm_finish": "confrim_finish"}
 
 
-# ---------------------------------------------------------------- protocol
-
-
 def crc16(data: bytes) -> int:
-    """CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF (utils::crc16)."""
+    """Computes CRC-16/CCITT-FALSE."""
     crc = 0xFFFF
     for byte in data:
         crc ^= byte << 8
@@ -88,7 +63,7 @@ def make_package(body: bytes) -> bytes:
 
 
 class PacketReader:
-    """Collects received bytes and returns complete, CRC-checked bodies (StreamBuffer)."""
+    """Splits received bytes into CRC-checked packets."""
 
     def __init__(self):
         self._buffer = bytearray()
@@ -100,7 +75,7 @@ class PacketReader:
         while True:
             start = self._buffer.find(PACKAGE_HEADER)
             if start < 0:
-                del self._buffer[: max(0, len(self._buffer) - 3)]  # keep a possible partial header
+                del self._buffer[: max(0, len(self._buffer) - 3)]
                 return bodies
             if start > 0:
                 del self._buffer[:start]
@@ -114,7 +89,7 @@ class PacketReader:
                 del self._buffer[: 8 + size]
             else:
                 self.crc_errors += 1
-                del self._buffer[: len(PACKAGE_HEADER)]  # resynchronise on the next header
+                del self._buffer[: len(PACKAGE_HEADER)]
 
 
 def pascal_string(text: str) -> bytes:
@@ -123,7 +98,7 @@ def pascal_string(text: str) -> bytes:
 
 
 def read_pascal_string(data: bytes, offset: int) -> tuple[str, int]:
-    """(text, next offset); raises ValueError on a truncated string."""
+    """Reads a Pascal string and returns it with the next offset."""
     if offset >= len(data):
         raise ValueError("missing Pascal string")
     length = data[offset]
@@ -146,7 +121,7 @@ def encode_settings_map(settings: dict[str, float]) -> bytes:
     if len(settings) > 255:
         raise ValueError("at most 255 settings per message")
     body = bytearray([OUT_SETTINGS_MAP, len(settings)])
-    for name in sorted(settings):  # QMap iterates in key order
+    for name in sorted(settings):
         body += pascal_string(name) + struct.pack("<f", float(settings[name]))
     return bytes(body)
 
@@ -154,15 +129,7 @@ def encode_settings_map(settings: dict[str, float]) -> bytes:
 def encode_job(
     prog_type: int, intervals: list[dict], params: list[dict], cycle: dict | None = None
 ) -> bytes:
-    """JOB message (ProgramModel::makeSendData).
-
-    type u8 | 0 u16 | cycle count u16 | cycle start u16 | cycle end u16 |
-    interval count u16 | per interval, per parameter in `params` order:
-    duration / flags as u32, anything else as f32 (all little endian).
-
-    params: settings.json "control_params" ([{name, type}, ...]);
-    intervals: [{param name: value}]; cycle: {count, start, end}.
-    """
+    """Encodes a JOB message."""
     cycle = cycle or {}
     body = bytearray([OUT_JOB])
     body += struct.pack(
@@ -191,13 +158,7 @@ def manual_setpoint_intervals(
     ramp_rate_per_min: float | None = None,
     hold_s: float | None = None,
 ) -> list[dict]:
-    """Intervals of a manual temperature setpoint, as Manual::sendProgram builds them.
-
-    enable_flags: the channel-enable bits of an interval (bits 0-2, from the
-    chamber's default program flags). With a ramp rate, a first interval ramps
-    from the current temperature; the setpoint is then held for hold_s, or
-    until stopped.
-    """
+    """Intervals of a manual temperature setpoint, as Manual::sendProgram builds them."""
     intervals = []
     if ramp_rate_per_min:
         if current_temp is None:
@@ -220,7 +181,7 @@ def manual_setpoint_intervals(
 
 
 def decode_message(body: bytes) -> tuple[int, object]:
-    """(code, payload) of an incoming body; raises ValueError when malformed."""
+    """Decodes an incoming message."""
     if not body:
         raise ValueError("empty message")
     code, data = body[0], body[1:]
@@ -262,16 +223,13 @@ def decode_message(body: bytes) -> tuple[int, object]:
     return code, data
 
 
-# ---------------------------------------------------------------- client
-
-
 @dataclass
 class PlcSnapshot:
     connected: bool = False
     address: str = ""
     state_names: list[str] = field(default_factory=list)
-    values: dict[str, float] = field(default_factory=dict)  # latest value of every state
-    values_at: float | None = None  # epoch s of the latest state values
+    values: dict[str, float] = field(default_factory=dict)
+    values_at: float | None = None
     settings: dict[str, float] = field(default_factory=dict)
     alarm_code: int = 0
     alarm_at: float | None = None
@@ -279,8 +237,11 @@ class PlcSnapshot:
     job_finished_at: float | None = None
     user_messages: list[tuple[float, str]] = field(default_factory=list)
     last_error: str = ""
-    job_started_at: float | None = None  # status_condition went to "work" (seen by this connection)
-    job_ended_at: float | None = None  # ... and left it again; None while the job runs
+    job_started_at: float | None = None
+    job_ended_at: float | None = None
+    settings_at: float | None = None
+    plc_time: float | None = None
+    plc_rate: float = 1.0
 
     @property
     def status(self) -> str:
@@ -288,24 +249,64 @@ class PlcSnapshot:
         return STATUS_NAMES.get(int(value), "none") if value is not None else "unknown"
 
 
-class PlcGateClient:
-    """One chamber PLC connection, run by a background thread.
+def plc_clock_now(plc_time, at, rate, wall, max_gap_s=0.25):
+    """Extrapolates the PLC clock to a wall-clock time."""
+    gap = max(0.0, wall - at)
+    if rate > 1.5:
+        gap = min(gap, max_gap_s)
+    return plc_time + gap * rate
 
-    Reconnects on its own, sends the keep-alive, asks for the state names
-    and settings until they arrive, and keeps the latest of everything in a
-    snapshot. Thread-safe.
-    """
+
+class PlcClock:
+    """The PLC's clock, from its job runtime."""
+
+    SEGMENT_MIN_S = 5.0
+    MIN_RATE, MAX_RATE = 0.1, 10000.0
+
+    def __init__(self):
+        self.time: float | None = None
+        self.rate = 1.0
+        self._wall: float | None = None
+        self._t_total: float | None = None
+        self._segment: tuple[float, float] | None = None
+
+    def advance(self, wall: float, values: dict) -> float:
+        t_total = values.get("t_total")
+        working = values.get("status_condition") == STATUS_WORK
+        if not (isinstance(t_total, (int, float)) and math.isfinite(t_total)) or not working:
+            t_total = None
+        if self.time is None:
+            self.time = wall
+        else:
+            elapsed = max(0.0, wall - self._wall)
+            if t_total is not None and self._t_total is not None and t_total >= self._t_total:
+                self.time += t_total - self._t_total
+                if self._segment is None:
+                    self._segment = (self._wall, self._t_total)
+                span = wall - self._segment[0]
+                if span >= self.SEGMENT_MIN_S and t_total > self._segment[1]:
+                    rate = (t_total - self._segment[1]) / span
+                    self.rate = min(max(rate, self.MIN_RATE), self.MAX_RATE)
+            else:
+                self._segment = None
+                self.time += elapsed * self.rate
+        self._wall, self._t_total = wall, t_total
+        return self.time
+
+
+class PlcGateClient:
+    """One chamber PLC connection, run by a background thread."""
 
     KEEPALIVE_S = 5.0
     CONNECT_TIMEOUT_S = 10.0
-    REQUEST_PERIOD_S = 5.0  # "base_params_request_period_sec"
+    REQUEST_PERIOD_S = 5.0
     MAX_MESSAGES = 50
-    HISTORY_SAMPLES = 48 * 3600  # two days at one sample per second
+    HISTORY_SAMPLES = 48 * 3600
 
     def __init__(self, host: str, port: int, on_sample=None):
         self.host = host
         self.port = int(port)
-        self._on_sample = on_sample  # called with {state: value, "timestamp": epoch s}
+        self._on_sample = on_sample
         self._lock = threading.Lock()
         self._snapshot = PlcSnapshot(address=f"{host}:{port}")
         self._socket: socket.socket | None = None
@@ -313,8 +314,8 @@ class PlcGateClient:
         self._thread: threading.Thread | None = None
         self._send_lock = threading.Lock()
         self._history: deque[dict] = deque(maxlen=self.HISTORY_SAMPLES)
-
-    # -- lifecycle
+        self._plc_times: deque[float] = deque(maxlen=self.HISTORY_SAMPLES)
+        self._clock = PlcClock()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -347,36 +348,50 @@ class PlcGateClient:
             time.sleep(0.05)
         return False
 
-    # -- state
-
     def snapshot(self) -> PlcSnapshot:
         with self._lock:
             s = self._snapshot
-            return PlcSnapshot(
-                s.connected,
-                s.address,
-                list(s.state_names),
-                dict(s.values),
-                s.values_at,
-                dict(s.settings),
-                s.alarm_code,
-                s.alarm_at,
-                list(s.components),
-                s.job_finished_at,
-                list(s.user_messages),
-                s.last_error,
-                s.job_started_at,
-                s.job_ended_at,
+            return dataclasses.replace(
+                s,
+                state_names=list(s.state_names),
+                values=dict(s.values),
+                settings=dict(s.settings),
+                components=list(s.components),
+                user_messages=list(s.user_messages),
             )
 
     def history(self, since: float | None = None) -> list[dict]:
-        """Samples received ({"timestamp": epoch s, state: value, ...}), oldest first; only newer than `since`."""
+        """Returns the received samples newer than a time."""
         with self._lock:
             if since is None:
                 return list(self._history)
             return [s for s in self._history if s["timestamp"] > since]
 
-    # -- commands
+    def plc_samples(self, since: float, max_points: int = 500, keys=None) -> list[dict]:
+        """Returns evenly spread samples newer than a PLC time."""
+        with self._lock:
+            times = list(self._plc_times)
+            start = bisect.bisect_right(times, since)
+            samples = list(itertools.islice(self._history, start, None))
+        times = times[start:]
+        step = max(1, len(samples) // max(1, max_points))
+        out = []
+        for t, sample in zip(times[::step], samples[::step], strict=True):
+            row = {"plc_time": t}
+            for key in keys or sample.keys():
+                if key in sample:
+                    row[key] = sample[key]
+            out.append(row)
+        return out
+
+    def plc_history(self, since: float | None = None) -> list[dict]:
+        """Returns the samples newer than a PLC time."""
+        with self._lock:
+            return [
+                {**s, "plc_time": t}
+                for s, t in zip(self._history, self._plc_times, strict=True)
+                if since is None or t > since
+            ]
 
     def send_text_cmd(self, command: str) -> None:
         self._send(encode_text_cmd(command))
@@ -395,8 +410,6 @@ class PlcGateClient:
             raise RuntimeError(f"The chamber PLC at {self.host}:{self.port} is not connected.")
         with self._send_lock:
             sock.sendall(make_package(body))
-
-    # -- connection thread
 
     def _set(self, **changes) -> None:
         with self._lock:
@@ -465,17 +478,21 @@ class PlcGateClient:
                     was_working = s.values.get("status_condition") == STATUS_WORK
                     s.values = dict(zip(s.state_names, payload, strict=True))
                     s.values_at = now
+                    s.plc_time = self._clock.advance(now, s.values)
+                    s.plc_rate = self._clock.rate
                     sample = {"timestamp": now, **s.values}
                     self._history.append(sample)
+                    self._plc_times.append(s.plc_time)
                     working = s.values.get("status_condition") == STATUS_WORK
                     if working and not was_working:
                         s.job_started_at, s.job_ended_at = now, None
                     elif was_working and not working:
                         s.job_ended_at = now
                 elif s.state_names:
-                    s.state_names = []  # the PLC changed its state list: ask again
+                    s.state_names = []
             elif code == IN_SETTINGS_MAP:
                 s.settings = payload
+                s.settings_at = now
             elif code == IN_ALARM:
                 s.alarm_code, s.alarm_at = payload, now
             elif code == IN_COMPONENTS:
@@ -487,5 +504,5 @@ class PlcGateClient:
         if sample and self._on_sample:
             try:
                 self._on_sample(sample)
-            except Exception:  # a listener must not break the connection
+            except Exception:
                 log.exception("PLC sample listener failed")

@@ -1,12 +1,4 @@
-"""Persisted registry of named chamber connections (name + host + port), in
-its own local SQLite database.
-
-The app can connect to several of these at once (up to
-chamber_session.MAX_CONNECTED_CHAMBERS, see views/controller.py and
-main_window.py's _connect_chamber) (a run saved via
-"Save Session as Run" is tagged with whichever chamber was connected at the
-time -- see data_service.save_monitoring_session()'s chamber parameter).
-"""
+"""Registry of saved chamber connections."""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -32,9 +24,7 @@ def _ensure_hub_sync_columns(conn):
 
 
 def connect_chambers(db_path=None):
-    """db_path overrides CHAMBERS_DB for this call only -- see
-    auth_service.connect_auth()'s docstring for why the other functions in
-    this file use the module-level constant implicitly instead."""
+    """Opens the chambers database."""
     path = db_path or CHAMBERS_DB
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -54,18 +44,11 @@ def connect_chambers(db_path=None):
         """
     )
     _ensure_hub_sync_columns(conn)
-    # How the chamber is reached: "json" -- the newline-JSON sample feed
-    # (tcp_client.py, control2-client's insight server); "plc" -- the PLC
-    # itself over the PLC gate protocol (plc_gate.py), which the agent API
-    # also uses to send commands.
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(chambers)")}
     if "protocol" not in existing:
         conn.execute("ALTER TABLE chambers ADD COLUMN protocol TEXT NOT NULL DEFAULT 'json'")
     conn.commit()
 
-    # Seed one default entry on first run so the chamber dropdown is never
-    # empty out of the box -- matches the host/port defaults the old,
-    # single-connection UI used to hardcode (127.0.0.1:5555).
     if conn.execute("SELECT 1 FROM chambers LIMIT 1").fetchone() is None:
         conn.execute(
             "INSERT INTO chambers (name, host, port, created_at) VALUES (?, ?, ?, ?)",
@@ -179,7 +162,7 @@ def touch_hub_synced(chamber_id):
 
 
 def update_chamber(chamber_id, name, host, port, protocol=None):
-    """protocol None keeps the chamber's current one (hub sync doesn't carry it)."""
+    """Updates a saved chamber."""
     _validate(name, host, port)
     if protocol is not None and protocol not in PROTOCOLS:
         raise ChamberError(f"Protocol must be one of {', '.join(PROTOCOLS)}.")

@@ -1,14 +1,4 @@
-"""Test profiles as PLC programs, shared by the Controller page and the agent API.
-
-A PLC program is a list of intervals plus a cycle, as control2-client's
-program control sends it (plc_gate.encode_job). Each interval either ramps
-to its temperature over its duration (RAMP_BIT) or goes to it at full speed
-and holds it for its duration (AWAIT_BIT).
-
-Profiles imported from control2-client carry their PLC program
-(program_json) and run as they are. Profiles made in Insight are a list of
-steps (setpoint, duration); each becomes a "go to and hold" interval.
-"""
+"""Test profiles as PLC programs, shared by the Controller page and the agent API."""
 
 from app.services import plc_gate
 
@@ -21,7 +11,7 @@ class ProgramError(ValueError):
 
 
 def program_for_profile(profile, enable_flags):
-    """(intervals, cycle) of a test profile; enable_flags: channel bits of an interval."""
+    """Builds the PLC program of a test profile."""
     program = profile.get("program")
     if program and program.get("intervals"):
         return list(program["intervals"]), dict(program.get("cycle") or {})
@@ -55,7 +45,7 @@ def interval_mode(interval):
 
 
 def total_duration_s(intervals, cycle=None):
-    """Programmed length; a cycle repeats intervals start..end (1-based) count times in all."""
+    """Returns the programmed length."""
     durations = [float(i.get("duration", 0)) for i in intervals]
     total = sum(durations)
     cycle = cycle or {}

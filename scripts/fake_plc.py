@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Fake chamber PLC speaking the PLC gate protocol (app/services/plc_gate.py).
-
-For developing and testing without hardware: streams the state values the
-real PLC sends, answers get_states / get_settings, runs JOB messages
-(setpoint and program intervals, ramps, holds, cycles), and handles
-stop / next / confirm_finish / confirm_alarm. The thermal model is rough and
-non-physical: just enough to look like a chamber.
-
-    uv run python scripts/fake_plc.py --port 4321
-"""
+"""Fake chamber PLC speaking the PLC gate protocol."""
 
 import argparse
 import random
@@ -57,7 +48,6 @@ SETTINGS = {
     "t_delay_23": 30.0,
     "temp_cool_duty": 0.3,
     "teh_duty": 1.0,
-    # PID tables: <loop>p<band>, <loop>i<band>, <loop>d<band>, as the PLC and control2-client name them
     "p1p0": 5.0,
     "p1i0": 600.0,
     "p1d0": 6.0,
