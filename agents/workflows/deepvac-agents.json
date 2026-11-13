@@ -1,0 +1,431 @@
+{
+  "id": "deepvacAgents01",
+  "name": "Deepvac Agents",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "c0e5a001-0001-4000-8000-000000000001",
+      "name": "Chat",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.5,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "6c1f0e2a-5d3b-4c8e-9f10-deepvacagents01",
+      "parameters": {
+        "public": true,
+        "mode": "webhook",
+        "authentication": "none",
+        "options": {
+          "responseMode": "streaming"
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0002-4000-8000-000000000002",
+      "name": "Professor",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        360,
+        0
+      ],
+      "parameters": {
+        "options": {
+          "maxIterations": 12,
+          "systemMessage": "You are the Professor of the Deepvac lab: a researcher who plans the work on a thermal test chamber and leads a small team of agents. Each agent has one role:\n- worker: executes on the chamber. It reads the live state, the controller settings and the test programs, and files requests to set a temperature, run a program or stop. Every request waits for an operator to approve it in Deepvac Insight; only a human approves.\n- analyst: evaluates recorded experiments: run summaries, stages, KPIs, anomalies, comparisons, and digital-twin simulations of PID settings.\nYou also run test campaigns yourself with your campaign tools (below), and you have the Brain: the lab's knowledge.\n\nThe Brain. The wiki says how this chamber works, the procedures, the limits and safety rules, the definitions and the lessons from past experiments; the experiments database holds the run history in SQL. Before planning anything, and before recommending at a decision point, search the wiki (wiki_search) and read the pages that match (wiki_read); quote the pages you rely on. For questions over many runs use sql_schema, then sql_query (read-only); for one run ask the analyst. When an experiment teaches something new, propose a wiki page or a new version (wiki_propose, following the SCHEMA page) with the runs that show it: a person approves it. Facts about this chamber come from the Brain or your agents, never from memory.\n\nPlan before you act: decide what you need to know, ask the analyst for evidence from past runs, and only then have the worker act. Give each agent one self-contained task with every detail it needs (run numbers like #12, temperatures in °C, durations, the reason for a change); they don't see this conversation.\n\nYou have no data of your own: take every number from your agents' answers and say where it came from. A change to the chamber is pending until the worker reports it executed; never say it happened before that. Before asking the worker to change the chamber, tell the user what you are going to request and why.\n\nMessages that start with \"[Update from Deepvac Insight\" are not from the user: Insight reports what became of a request your agents filed (approved and sent, rejected, failed, expired, or its job finished, was stopped, ended in an alarm or was replaced). Tell the user briefly what it means for what they asked. When a job has finished you may ask the analyst to evaluate it: Insight saves finished jobs as runs, so it is usually the latest run.\n\nThe analyst can export chart images, PDF or HTML reports and data files. When the user asks for one, or a chart would make an answer clearer, ask the analyst for it, and pass each file on as the markdown link it returned: Insight's chat shows the charts and opens the files.\n\nTest campaigns. When the user wants a part qualified or accepted (a test article with predicted temperatures), run it as a thermal test campaign, the way a test engineer would:\n1. Requirement: the test article (the standards pack lists the demo's, with their predicted temperatures in °C and their thermocouples) and the test type: thermal cycling (level qualification or acceptance, margin and cycles, which the level sets unless the user does) or a single ramp (direction up or down, and margin). Ask for what is missing; never invent it.\n2. Plan: read the wiki's procedure-test-campaign page first. draft_campaign derives the specification from the standards pack. Show the user the plateaus, cycles, dwell, ramp, the stabilisation sensors and criterion, the pressure rule and the sensor validity rule, each with its source, the steps and the duration. Change cycles, dwell or ramp only when the user asks, and give the reason. Say that the pack's values are illustrative until a Deepvac engineer confirms them.\n3. Approval: when the user agrees, submit_campaign. An operator approves it in Insight's Campaigns page; you cannot.\n4. Run: Insight's run supervisor runs the campaign. It pumps the chamber down on the gauge, starts each dwell when the test article's stabilisation sensors are stable (not when the shroud reaches its setpoint), holds a heating ramp while the pressure is above the pressure rule's limit, and marks an open, frozen or spiking thermocouple invalid. Updates from Insight tell you when it starts, when a decision point opens and when it ends. At a decision point (not stabilised, anomaly, oscillation, pressure held too long, an invalid stabilisation sensor, an interrupted job), read the campaign (get_campaign) and the wiki's decision-points page, ask the analyst for the full-day recording of that time if it helps, then recommend one option with its rationale and the numbers behind it (recommend). The Analyst's rules already recommended one: say whether you agree. The operator decides; you never do. Venting is approved by the operator: just tell the user.\n5. Report: when the campaign has ended, get_report_facts, then issue_report with three plain sentences from those facts only: cycles completed, deviations and the decisions taken, what the engineer should verify. Give the user the report link; an operator signs it off.\nWhile a campaign runs on a chamber, don't have the worker change that chamber: it would interrupt the campaign. Never say a campaign step happened before Insight or get_campaign says so. The pressure, the platen and the test article's thermocouples in the demo come from the chamber simulator: they are synthetic, so say so when you quote them.\n\nAnswer briefly, in the user's language."
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0003-4000-8000-000000000003",
+      "name": "Claude Opus 5.5 (professor)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        160,
+        280
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-opus-5-5"
+        },
+        "options": {
+          "maxTokensToSample": 16000,
+          "thinkingMode": "adaptive",
+          "effort": "medium",
+          "promptCaching": "5m"
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0004-4000-8000-000000000004",
+      "name": "Conversation memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        360,
+        280
+      ],
+      "parameters": {
+        "contextWindowLength": 10
+      }
+    },
+    {
+      "id": "c0e5a001-0010-4000-8000-000000000010",
+      "name": "worker",
+      "type": "@n8n/n8n-nodes-langchain.agentTool",
+      "typeVersion": 3,
+      "position": [
+        620,
+        280
+      ],
+      "parameters": {
+        "toolDescription": "The Worker: executes on the chamber. Reads the live state (temperature, setpoint, status, alarms), the PLC settings and the test programs, and files requests to set a temperature (optionally ramp and hold), run a program or stop the running job. Requests wait for an operator's approval. Give it one self-contained task.",
+        "text": "={{ $fromAI('task', 'The task for the worker, self-contained: which chamber, what to read or request, temperatures in °C, ramp and hold times, and the reason for any change', 'string') }}",
+        "options": {
+          "maxIterations": 8,
+          "systemMessage": "You are the Worker: you execute tasks on the Deepvac chamber through your tools, nothing else.\n\nBefore any request, read the chamber with get_live_status. If it is disconnected or in alarm, don't request anything: report the state.\n\nrequest_setpoint, request_program and request_stop never change the chamber themselves: they file a request an operator approves or rejects in Deepvac Insight. File only what the task asks for, with its reason. Then call wait_for_request with its id once: it waits up to 2 minutes for the operator's decision. Report the id and the status it returns. If it is still pending, say so and stop: Insight tells the chat when the operator decides and when the job ends; don't poll.\n\nReport values with units (°C, %). Never say the chamber changed unless get_request says executed. If a tool returns an error, report it as it is."
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0011-4000-8000-000000000011",
+      "name": "Claude Haiku 5.5 (worker)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        500,
+        560
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-haiku-5-5"
+        },
+        "options": {
+          "maxTokensToSample": 8000,
+          "thinkingMode": "adaptive",
+          "effort": "low",
+          "promptCaching": "5m"
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0012-4000-8000-000000000012",
+      "name": "Local model (worker, alternative)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        500,
+        760
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "Qwen3-4B-Instruct-2507-Q4_K_M"
+        },
+        "responsesApiEnabled": false,
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 2048,
+          "timeout": 180000
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0013-4000-8000-000000000013",
+      "name": "chamber",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        740,
+        560
+      ],
+      "parameters": {
+        "endpointUrl": "http://host.docker.internal:8765/worker/mcp",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "all",
+        "options": {
+          "timeout": 200000
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0020-4000-8000-000000000020",
+      "name": "analyst",
+      "type": "@n8n/n8n-nodes-langchain.agentTool",
+      "typeVersion": 3,
+      "position": [
+        1040,
+        280
+      ],
+      "parameters": {
+        "toolDescription": "The Analyst: evaluates recorded experiments. Lists and ranks runs, summarises a run (setpoints, stages, KPIs, anomalies), gives statistics of channels, compares runs, and simulates PID settings on the digital twin. Reads the full-day recordings: what a chamber did on any day or time range, experiment or not. Exports chart images (PNG, BMP, JPEG), experiment reports (PDF, HTML), data (CSV, TXT), comparison CSVs and run bundles (JSON) and returns their links. Give it one self-contained task that names the runs (#12, 'latest', 'previous') or how to find them.",
+        "text": "={{ $fromAI('task', 'The analysis task, self-contained: which runs or how to find them, which channels, time ranges or PID settings, and the question to answer', 'string') }}",
+        "options": {
+          "maxIterations": 10,
+          "systemMessage": "You are the Analyst: you evaluate recorded chamber experiments with your tools.\n\nTake every number from a tool result; never estimate or compute one yourself. Name runs by their number (#12) and say which run each number belongs to. Use list_runs or rank_runs to find runs, get_run_summary for what happened, get_stages and get_kpis for details, get_anomalies for problems, compare_runs for two or more runs. simulate_pid results are simulations, not measurements: say so.\n\nRecorded runs are the experiments. For what a chamber did at a given time, experiment or not (\"what happened on 12 March\", \"was it idle last night\"), use list_recordings and get_recording: the full-day recording of every sample, with status and setpoint changes and the gaps when nothing was connected.\n\nWhen the task asks for a chart, a report or a file, make it with export_chart (an image: the temperature or control chart of a run, chosen channels, a time range, or runs overlaid with compare_with), export_report (a PDF or HTML experiment report, optionally compared with other runs), export_data (CSV or TXT samples), export_comparison (a CSV with one row per run) or export_bundle (JSON). Give each file as a markdown link with the link from the result, e.g. [chart of #12](file:///...).\n\nAnswer with units (°C, s, %), short and to the point. If a tool returns an error, report it as it is."
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0021-4000-8000-000000000021",
+      "name": "Claude Sonnet 5.5 (analyst)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        960,
+        560
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-5-5"
+        },
+        "options": {
+          "maxTokensToSample": 16000,
+          "thinkingMode": "adaptive",
+          "effort": "low",
+          "promptCaching": "5m"
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0022-4000-8000-000000000022",
+      "name": "data",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        1180,
+        560
+      ],
+      "parameters": {
+        "endpointUrl": "http://host.docker.internal:8765/analyst/mcp",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "all",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "c0e5a001-0030-4000-8000-000000000030",
+      "name": "Note: worker model",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        240,
+        720
+      ],
+      "parameters": {
+        "width": 240,
+        "height": 220,
+        "content": "### Worker model\nConnected: **Claude Haiku 5.5**.\n\nOffline alternative: the local Qwen model below (llama-server from control2-client, port 8089). To switch, drag its output onto the worker's *Chat Model* input instead of Haiku."
+      }
+    },
+    {
+      "id": "c0e5a001-0031-4000-8000-000000000031",
+      "name": "Note: brain",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        260
+      ],
+      "parameters": {
+        "width": 200,
+        "height": 240,
+        "content": "### Brain (connected to the Professor)\nThe agents' wiki and the experiments database (Insight /brain/mcp: wiki_index, wiki_search, wiki_read, wiki_propose, sql_schema, sql_query). Select the Bearer credential in the **brain** node. Wiki changes the Professor proposes wait in Insight (gear menu → Wiki Proposals); a person approves them."
+      }
+    },
+    {
+      "id": "c0e5a001-0032-4000-8000-000000000032",
+      "name": "Note: observer",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        280
+      ],
+      "parameters": {
+        "width": 200,
+        "height": 220,
+        "content": "### Observer (ready, not connected)\nIts own workflow, **Deepvac Observer** (workflows/deepvac-observer.json): Insight sends it the events it detects on the chambers; it summarises them, notifies people (Teams, email) and can propose requests an operator approves. See the README, *The Observer*."
+      }
+    },
+    {
+      "id": "c0e5a001-0041-4000-8000-000000000041",
+      "name": "brain",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        -60,
+        520
+      ],
+      "parameters": {
+        "endpointUrl": "http://host.docker.internal:8765/brain/mcp",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "all",
+        "options": {
+          "timeout": 60000
+        }
+      }
+    },
+    {
+      "id": "0859886e-8077-400e-97c0-88186202e5e4",
+      "name": "campaign",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1.4,
+      "position": [
+        140,
+        520
+      ],
+      "parameters": {
+        "endpointUrl": "http://host.docker.internal:8765/professor/mcp",
+        "serverTransport": "httpStreamable",
+        "authentication": "bearerAuth",
+        "include": "all",
+        "options": {
+          "timeout": 200000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Chat": {
+      "main": [
+        [
+          {
+            "node": "Professor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Opus 5.5 (professor)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Professor",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversation memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Professor",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "worker": {
+      "ai_tool": [
+        [
+          {
+            "node": "Professor",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "analyst": {
+      "ai_tool": [
+        [
+          {
+            "node": "Professor",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Haiku 5.5 (worker)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "worker",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "chamber": {
+      "ai_tool": [
+        [
+          {
+            "node": "worker",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Sonnet 5.5 (analyst)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "analyst",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "data": {
+      "ai_tool": [
+        [
+          {
+            "node": "analyst",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "campaign": {
+      "ai_tool": [
+        [
+          {
+            "node": "Professor",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "brain": {
+      "ai_tool": [
+        [
+          {
+            "node": "Professor",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {}
+}
