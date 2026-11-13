@@ -1,12 +1,6 @@
 summary.txt
 tcp/
-.claude/
 
-# Internal dev doc, mirrored to Confluence -- not meant to be pushed
-DEV_GUIDE.md
-
-# Runtime data: sqlite caches/DBs, logs, backups, generated reports -- none
-# of this is source, all of it is regenerated/recreated on first run.
 data/
 
 # Python
@@ -41,4 +35,11 @@ installer/output/
 DEV_GUIDE.md
 CONTRIBUTING.md
 
-docs/
+docs/*
+
+# Word lock files
+~$*
+
+# Internal planning documents of the agents (implementation, expo plan, Q&A): not source
+agents/**/*.docx
+agents/**/*.pdf

@@ -1,4 +1,4 @@
-"""Entry point for DeepVac Desktop. Run with: python main.py"""
+"""Entry point for Deepvac Desktop."""
 
 from app.app import main
 
