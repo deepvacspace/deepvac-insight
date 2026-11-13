@@ -1,4 +1,4 @@
-"""SharedRunsDialog — read-only catalog of runs shared through the collaboration host."""
+"""Dialog listing the runs shared through the collaboration host."""
 
 from PySide6.QtWidgets import (
     QDialog,

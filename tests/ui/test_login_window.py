@@ -1,7 +1,4 @@
-"""Smoke tests for LoginWindow (app/login_window.py). Real widgets, real
-auth_service calls (against the isolated deepvac_data_dir database, never
-real credentials) -- no fake auth stub, since auth_service itself is fast
-and safe once pointed at an isolated sqlite file."""
+"""Tests of the login window."""
 
 import pytest
 
@@ -15,9 +12,7 @@ pytestmark = pytest.mark.ui
 def window(deepvac_ui, qtbot):
     win = LoginWindow()
     qtbot.addWidget(win)
-    win.show()  # error_lbl.isVisible() reflects effective visibility, which
-    # requires the top-level window to actually be shown, not just the
-    # label's own setVisible(True) flag.
+    win.show()
     qtbot.waitExposed(win)
     return win
 
@@ -33,7 +28,7 @@ def test_email_and_password_controls_exist(window):
 
 
 def test_empty_input_is_rejected_with_error_shown(window):
-    window._do_login()  # both fields empty
+    window._do_login()
     assert window.error_lbl.isVisible()
     assert window.authenticated_user is None
 
@@ -121,7 +116,6 @@ def test_signup_success_authenticates_and_creates_real_account(window, qtbot):
 
     assert window.authenticated_user is not None
     assert window.authenticated_user["email"] == "brandnew@example.com"
-    # Really persisted -- not a fake/stubbed auth path.
     assert auth_service.authenticate("brandnew@example.com", "password123") is not None
 
 

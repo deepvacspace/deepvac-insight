@@ -1,4 +1,4 @@
-"""ObserverDialog: acknowledging events and saving settings."""
+"""Tests of the Observer dialog."""
 
 import pytest
 from PySide6.QtWidgets import QMessageBox, QPushButton

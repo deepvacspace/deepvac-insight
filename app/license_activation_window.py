@@ -1,4 +1,4 @@
-"""LicenseActivationWindow — browser-based device-code flow that authenticates this installation."""
+"""Window to activate this installation's license."""
 
 from app.device_code_window import DeviceCodeWindow
 from app.services import licensing_client

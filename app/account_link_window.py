@@ -1,4 +1,4 @@
-"""AccountLinkWindow — browser-based device-code flow to link a local profile to a hub account."""
+"""Window to link a local profile to a hub account."""
 
 from app.device_code_window import DeviceCodeWindow
 from app.services import licensing_client

@@ -1,5 +1,4 @@
-"""Wiki Proposals (app/wiki_proposals_dialog.py): a person sees what an agent's
-proposal changes and approves or rejects it."""
+"""Tests of the wiki proposals dialog."""
 
 import shutil
 from pathlib import Path
@@ -44,7 +43,7 @@ def test_approve_and_reject(dialog, monkeypatch):
     )
     widget.refresh()
     assert widget.list.count() == 2
-    widget.list.setCurrentRow(1)  # oldest last: the new page
+    widget.list.setCurrentRow(1)
     assert "+ # Glass heating at low temperature" in widget.diff.toPlainText()
     assert "seen in #40" in widget.reason.text()
     widget.approve_btn.click()
@@ -56,7 +55,7 @@ def test_approve_and_reject(dialog, monkeypatch):
     assert wiki_service.get_proposal(first["id"])["status"] == "approved"
 
     widget.list.setCurrentRow(0)
-    assert "--- current" in widget.diff.toPlainText()  # an update: a diff against the page
+    assert "--- current" in widget.diff.toPlainText()
     monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("not about PID", True))
     widget.reject_btn.click()
     rejected = wiki_service.get_proposal(second["id"])

@@ -1,5 +1,4 @@
-"""AgentRequestsDialog: pending agent requests can be approved or rejected,
-and the decision is recorded with the signed-in user's name."""
+"""Tests of the agent requests dialog."""
 
 import pytest
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QPushButton
@@ -34,4 +33,4 @@ def test_approve_and_reject(deepvac_data_dir, qapp, qtbot, monkeypatch):
     _buttons(dialog, rows[str(second["id"])])["Reject"].click()
     rejected = svc.get_request(second["id"])
     assert (rejected["status"], rejected["decision_comment"]) == (svc.REJECTED, "not now")
-    assert all(not _buttons(dialog, r) for r in range(2))  # nothing left to decide
+    assert all(not _buttons(dialog, r) for r in range(2))

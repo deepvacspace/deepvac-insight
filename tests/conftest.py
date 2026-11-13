@@ -2,12 +2,8 @@
 
 import os
 
-# Must happen before PySide6 is imported anywhere -- including by pytest-qt's
-# own plugin machinery during collection -- so set it here, at module import
-# time, rather than inside a fixture. Overridable: a developer who explicitly
-# exports a different QT_QPA_PLATFORM (e.g. to watch tests run on a real
-# display) is left alone.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ["DEEPVAC_HOLD_ADVISOR"] = "rules"
 
 import pytest  # noqa: E402
 import shiboken6  # noqa: E402
@@ -17,32 +13,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 @pytest.fixture
 def deepvac_data_dir(tmp_path, monkeypatch):
-    """Redirect every database/log/backup/report path this app writes to
-    into an isolated tmp_path, so tests never touch the real
-    %LOCALAPPDATA%\\DeepVac\\data (or the source-tree data/ dir in a dev
-    checkout). Never point a test at the real 52 MB run database.
-
-    Two mechanisms, both pointed at the same directory:
-
-    1. The DEEPVAC_DATA_DIR environment variable (app/common.py's
-       resolve_app_paths() reads this) -- correct for anything imported
-       for the first time *after* this fixture runs, and for subprocess
-       cases like the frozen --smoke-test.
-    2. Directly monkeypatching the small, fixed set of already-resolved
-       module-level path constants (app.common.DATA_DIR/REPORTS_DIR and
-       each service's own DB_PATH-style constant) -- needed because
-       app.common is almost certainly already imported by the time any
-       test runs (module import is a process-wide singleton), so the env
-       var alone can't retroactively change constants that were computed
-       from it at import time.
-
-    Not reset here: log_service's setup_logging()/install_excepthook() are
-    explicitly idempotent (guarded by a module-level flag, safe to call
-    more than once) and don't reopen their file handler for a new
-    directory on a second call. No current test suite depends on
-    per-test log isolation; if one starts to, that guard is the thing
-    to revisit.
-    """
+    """Redirects the app's data paths to a temporary directory."""
     data_dir = tmp_path / "deepvac_data"
     monkeypatch.setenv("DEEPVAC_DATA_DIR", str(data_dir))
 
@@ -99,23 +70,7 @@ def deepvac_data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def qsettings_isolated(tmp_path):
-    """Redirects every QSettings("DeepVac", "Insight") construction (theme,
-    language, window geometry, open tabs, per-run channel selection, the
-    remember-me token, ...) to an INI file under tmp_path instead of the
-    real Windows registry key -- so a test can never read a developer's
-    actual saved settings, nor leave test-written settings behind in the
-    registry after the run. QSettings's format/path are process-global
-    Qt statics (not per-instance), so this is set and restored around the
-    test rather than passed as a constructor argument -- every call site
-    in app/ just does QSettings("DeepVac", "Insight") unchanged.
-    """
-    # QSettings has no getter for the custom search path (only the static
-    # setPath() setter), so there's nothing to save/restore there -- each
-    # test using this fixture points IniFormat at its own tmp_path, which
-    # is only ever consulted while defaultFormat() is IniFormat. Restoring
-    # defaultFormat() back to Native afterward is what actually matters:
-    # it's what makes any *other* code's QSettings("DeepVac", "Insight")
-    # call go back to the real registry once this fixture's test ends.
+    """Redirects QSettings to a temporary INI file."""
     previous_format = QSettings.defaultFormat()
 
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
@@ -128,10 +83,7 @@ def qsettings_isolated(tmp_path):
 
 @pytest.fixture(autouse=True)
 def no_modal_dialogs(monkeypatch):
-    """Autouse for the whole suite: a QMessageBox.exec() with nothing to
-    dismiss it would hang a test forever rather than fail it. Records what
-    was shown (available as the fixture's return value) so a test can
-    still assert on dialog content without a human clicking through it."""
+    """Makes message boxes return immediately."""
     calls = []
 
     def _record(kind):
@@ -150,16 +102,7 @@ def no_modal_dialogs(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_blocking_menus(qapp):
-    """Settings/Account are QMenu.exec() calls -- a real nested event loop
-    that blocks waiting for a click, same problem as QMessageBox. Unlike
-    QMessageBox's static methods, QMenu.exec() is a Shiboken/C++-backed
-    instance method -- monkeypatching the class attribute does NOT
-    actually override it (verified: it still hangs). The standard,
-    reliable way to end a Qt modal loop from test code instead is a
-    QTimer polling QApplication.activePopupWidget() and closing whatever
-    it finds, which is what this does for the duration of every test
-    (construction/population of the menu still runs for real; it's just
-    dismissed with no selection rather than waited on)."""
+    """Makes menus return immediately."""
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
@@ -177,14 +120,7 @@ def no_blocking_menus(qapp):
 
 @pytest.fixture(autouse=True)
 def no_real_network(monkeypatch):
-    """Defense in depth on top of the architectural fact (verified in
-    Phase 2) that nothing auto-connects on construction: makes it
-    impossible for a chamber/OPC connection to actually open a socket
-    during a UI test, even if some future change added an unexpected
-    auto-connect path. Live Monitoring/OPC Server are only reachable via
-    an explicit Connect/Start click, which no smoke test in this suite
-    performs -- this exists purely as a safety net, not because a test
-    currently needs it."""
+    """Blocks real chamber and OPC connections."""
     from app.services.tcp_client import ChamberConnection
 
     monkeypatch.setattr(
@@ -194,27 +130,21 @@ def no_real_network(monkeypatch):
 
 @pytest.fixture
 def deepvac_ui(deepvac_data_dir, qsettings_isolated, qapp, tmp_path, monkeypatch):
-    """Composition fixture for widget-construction tests: isolated data
-    dir + isolated QSettings + the shared pytest-qt QApplication, plus
-    DEEPVAC_DATA_ROOT pointed at an empty tmp_path so DeepVacDesktop.
-    __init__()'s load_runs() (which runs unconditionally, for real, on
-    construction) can't wander off and discover a real deepvac workspace
-    folder that happens to exist on whatever machine runs this suite --
-    it just sees zero source files and starts with an empty run list.
-    Tears down by closing every top-level window and asserting no
-    application-owned QThread (UploadWorker, SimWorker, ...) is still
-    running -- a leaked worker thread here would silently keep going into
-    the next test otherwise.
-    """
+    """Isolated environment for widget tests."""
     empty_workspace = tmp_path / "empty_workspace"
     empty_workspace.mkdir(exist_ok=True)
     monkeypatch.setenv("DEEPVAC_DATA_ROOT", str(empty_workspace))
+    QSettings("DeepVac", "Insight").setValue("agent_api/enabled", False)
+    from app.services.demo_launcher import DemoLauncher
+
+    monkeypatch.setattr(DemoLauncher, "start", lambda self, mode, **kw: self._starts.append(mode))
+    monkeypatch.setattr(DemoLauncher, "_starts", [], raising=False)
 
     yield deepvac_data_dir
 
     app = QApplication.instance()
     for window in list(app.topLevelWidgets()):
-        if shiboken6.isValid(window):  # closing the main window can delete menus listed here
+        if shiboken6.isValid(window):
             window.close()
     app.processEvents()
 
@@ -227,8 +157,5 @@ FAKE_USER = {"id": 0, "name": "Test User", "email": "test-user@example.com"}
 
 @pytest.fixture
 def fake_user():
-    """A throwaway in-memory user dict -- bypasses real authentication for
-    tests that only need *a* current_user to construct widgets with, same
-    approach as app.app._run_smoke_test()'s --smoke-test mode. A fresh copy
-    each time since callers may mutate it (e.g. profile-dialog tests)."""
+    """A test user."""
     return dict(FAKE_USER)

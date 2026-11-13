@@ -1,7 +1,4 @@
-"""AgentRequestsDialog — approve or reject chamber actions the agents asked
-for (app/services/agent_requests_service.py). Nothing an agent requests
-reaches a chamber until a signed-in user approves it here; the decision is
-recorded with the user's name."""
+"""Dialog to approve or reject the chamber actions requested by agents."""
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -32,7 +29,6 @@ class AgentRequestsDialog(QDialog):
         self.setMinimumSize(900, 440)
         self._build_ui()
         self._refresh()
-        # requests arrive and change status (executed, failed) while the dialog is open
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(self.REFRESH_MS)
@@ -83,7 +79,6 @@ class AgentRequestsDialog(QDialog):
         agent_requests_service.expire_stale()
         status = agent_requests_service.PENDING if self._pending_only.isChecked() else None
         requests = agent_requests_service.list_requests(status=status, limit=100)
-        # pending first: they are the ones waiting for someone
         requests.sort(key=lambda r: (r["status"] != agent_requests_service.PENDING, -r["id"]))
         self._table.setRowCount(len(requests))
         for row_idx, request in enumerate(requests):

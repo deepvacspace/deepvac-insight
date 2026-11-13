@@ -1,4 +1,4 @@
-"""OrgDirectoryDialog — read-only list of the organization's active members, pulled from Deepvac Hub."""
+"""Dialog listing the organization's members."""
 
 from PySide6.QtWidgets import (
     QDialog,

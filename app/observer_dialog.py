@@ -1,5 +1,4 @@
-"""ObserverDialog: lists Observer events, acknowledges them and edits the
-Observer settings."""
+"""Dialog for Observer events and settings."""
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -172,7 +171,7 @@ class ObserverDialog(QDialog):
         event = obs.record(
             obs.TEST,
             obs.WARNING,
-            self.tr("Test event from DeepVac Insight"),
+            self.tr("Test event from Deepvac Insight"),
             {"sent_by": self.current_user.get("name") or "Unknown"},
             push=bool(config["push"]),
         )

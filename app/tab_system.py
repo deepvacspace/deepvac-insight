@@ -25,7 +25,8 @@ class TabBar(QWidget):
     tab_activated = Signal(int)
     tab_closed = Signal(int)
     split_right_requested = Signal(int)
-    move_to_group_requested = Signal(int, int)  # tab_index, group_id
+    move_to_group_requested = Signal(int, int)
+    add_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,7 +36,7 @@ class TabBar(QWidget):
         self._active = -1
         self._drag_start = None
         self._drag_idx = -1
-        self.get_other_groups = None  # injected by EditorGroup
+        self.get_other_groups = None
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -54,6 +55,13 @@ class TabBar(QWidget):
         self._tlayout = QHBoxLayout(self._container)
         self._tlayout.setContentsMargins(0, 0, 0, 0)
         self._tlayout.setSpacing(0)
+        self.add_btn = QPushButton("+")
+        self.add_btn.setObjectName("tabAdd")
+        self.add_btn.setFixedSize(35, 35)
+        self.add_btn.setCursor(Qt.PointingHandCursor)
+        self.add_btn.setToolTip(self.tr("Open a run…"))
+        self.add_btn.clicked.connect(self.add_requested)
+        self._tlayout.addWidget(self.add_btn)
         self._tlayout.addStretch(1)
 
         self._scroll.setWidget(self._container)
@@ -217,16 +225,17 @@ class TabBar(QWidget):
 
 
 class EditorGroup(QWidget):
-    active_changed = Signal(object)  # RunTabPage or None
-    split_requested = Signal(object, str, str)  # self, direction, key
-    group_empty = Signal(object)  # self
-    tab_received = Signal(object, str, str)  # self, key, id (from drop)
-    page_closed = Signal(str)  # key -- emitted only for a real close (not take_page/move)
+    active_changed = Signal(object)
+    split_requested = Signal(object, str, str)
+    group_empty = Signal(object)
+    tab_received = Signal(object, str, str)
+    page_closed = Signal(str)
+    add_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.group_id = _new_gid()
-        self._pages = {}  # key -> RunTabPage
+        self._pages = {}
         self.setAcceptDrops(True)
         self.setMinimumSize(300, 300)
 
@@ -246,6 +255,7 @@ class EditorGroup(QWidget):
         self.tab_bar.tab_closed.connect(self._on_closed)
         self.tab_bar.split_right_requested.connect(lambda i: self._on_split("right", i))
         self.tab_bar.move_to_group_requested.connect(self._on_move_to_group)
+        self.tab_bar.add_requested.connect(lambda: self.add_requested.emit(self))
         lay.addWidget(self.tab_bar)
 
         self.stack = QStackedWidget()
@@ -347,14 +357,15 @@ class EditorGroup(QWidget):
 
 
 class EditorArea(QWidget):
-    active_page_changed = Signal(object)  # RunTabPage or None
-    page_closed = Signal(str)  # key -- bubbled from whichever group's tab was actually closed
+    active_page_changed = Signal(object)
+    page_closed = Signal(str)
+    add_requested = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("editorArea")
         self._groups = []
-        self._pages = {}  # key -> (RunTabPage, EditorGroup)
+        self._pages = {}
         self._active_group = None
         self._sync_hub = CrosshairSyncHub()
 
@@ -397,6 +408,7 @@ class EditorArea(QWidget):
         g.group_empty.connect(self._on_group_empty)
         g.tab_received.connect(self._on_tab_received)
         g.page_closed.connect(self._on_page_closed)
+        g.add_requested.connect(self._on_add_requested)
         g.tab_bar.get_other_groups = lambda: [x for x in self._groups if x is not g]
         self._groups.append(g)
         self._active_group = g
@@ -410,7 +422,8 @@ class EditorArea(QWidget):
         entry = self._pages.get(key)
         return entry[0] if entry else None
 
-    def open_run(self, key, run_id, page):
+    def open_run(self, key, run_id, page, group=None):
+        """Opens or focuses a page."""
         if key in self._pages:
             _, grp = self._pages[key]
             grp.tab_bar.add_or_focus(key, run_id)
@@ -418,7 +431,7 @@ class EditorArea(QWidget):
             self._active_group = grp
             self.active_page_changed.emit(page)
             return
-        grp = self._groups[0]
+        grp = group if group in self._groups else self._groups[0]
         self._pages[key] = (page, grp)
         grp.add_page(key, run_id, page)
         self._active_group = grp
@@ -441,6 +454,17 @@ class EditorArea(QWidget):
     def update_theme(self, dark):
         for page, _ in self._pages.values():
             page.update_theme(dark)
+
+    def split_page_right(self, key):
+        """Moves an open page into a new pane to the right of its own."""
+        if key in self._pages:
+            _, grp = self._pages[key]
+            if grp.tab_bar.count() > 1:
+                self._on_split_requested(grp, "right", key)
+
+    def _on_add_requested(self, group):
+        self._active_group = group
+        self.add_requested.emit(group)
 
     def _on_group_active_changed(self, page):
         sender_group = self.sender()
@@ -515,11 +539,6 @@ class EditorArea(QWidget):
         self.active_page_changed.emit(self.active_page())
 
     def _on_page_closed(self, key):
-        # Also drop our own key -> (page, group) record, not just the
-        # group's -- open_run()'s "if key in self._pages" fast path would
-        # otherwise try to re-focus a page/group that no longer exists the
-        # next time the same key is opened (e.g. reconnecting a chamber
-        # whose tab was closed).
         self._pages.pop(key, None)
         self.page_closed.emit(key)
 

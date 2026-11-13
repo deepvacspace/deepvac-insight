@@ -1,5 +1,4 @@
-"""Smoke tests for CollabDialog (app/collab_dialog.py): hosting on/off and
-the resulting join code and connection state."""
+"""Tests of the collaboration dialog."""
 
 import pytest
 

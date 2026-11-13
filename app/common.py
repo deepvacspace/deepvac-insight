@@ -20,26 +20,8 @@ class AppPaths:
 
 
 def resolve_app_paths(data_dir_override: Path | str | None = None) -> AppPaths:
-    """Resolve read-only resource and writable-data directories.
-
-    Read-only resources (icons, translations, the model checkpoint) always
-    resolve relative to the source tree, or, when frozen, the PyInstaller
-    bundle directory (sys._MEIPASS for --onefile, the exe's own folder for
-    --onedir -- both are exposed via _MEIPASS). That directory may be inside
-    Program Files and isn't guaranteed writable, which is exactly why
-    writable data is resolved separately below rather than reusing it.
-
-    Writable data (databases, logs, backups, generated reports) resolves in
-    priority order: `data_dir_override` (for tests that want an isolated
-    directory per test without touching the environment), then the
-    DEEPVAC_DATA_DIR environment variable (for whole-process isolation --
-    e.g. the --smoke-test CLI mode, or a CI job), then the unchanged
-    production default (source-tree data/, or %LOCALAPPDATA%\\DeepVac\\data
-    when frozen). With neither set, this resolves exactly as it always did.
-    """
+    """Resolve read-only resource and writable-data directories."""
     if getattr(sys, "frozen", False):
-        # _MEIPASS is set by PyInstaller's bootloader at runtime; it's not
-        # part of typeshed's sys stub, hence the ignore.
         resources_dir = Path(sys._MEIPASS) / "resources"  # type: ignore[attr-defined]
         default_data_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "DeepVac" / "data"
     else:
@@ -63,16 +45,13 @@ def resolve_app_paths(data_dir_override: Path | str | None = None) -> AppPaths:
     )
 
 
-# Backward-compatible module-level constants -- existing UI/service code
-# that does `from app.common import DATA_DIR` etc. keeps working unchanged.
-# Resolved once, at import time, from whatever DEEPVAC_DATA_DIR is set to at
-# that moment (or unset, for production/default behavior).
 _paths = resolve_app_paths()
 RESOURCES_DIR = _paths.resources_dir
 DATA_DIR = _paths.data_dir
 REPORTS_DIR = _paths.reports_dir
 
 LOGO_PATH = str(RESOURCES_DIR / "logo.png")
+LOGO_WHITE_PATH = str(RESOURCES_DIR / "logo-white.png")
 ICON_PATH = str(RESOURCES_DIR / "icon.png")
 
 COLORS = [
@@ -97,6 +76,14 @@ RULE_COLOR_OPTIONS = [
 
 _TAB_MIME = "application/deepvac-tab"
 _gid = 0
+
+PAGE_ANALYSIS = 0
+PAGE_REPORTS = 1
+PAGE_CONTROLLER = 2
+PAGE_OPC = 3
+PAGE_CAMPAIGNS = 4
+PAGE_AI_AGENTS = 5
+PAGE_COUNT = 6
 
 
 def _new_gid() -> int:

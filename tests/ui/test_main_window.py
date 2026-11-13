@@ -1,7 +1,4 @@
-"""Smoke tests for DeepVacDesktop (app/main_window.py) construction and
-its Settings/Account menus. Real widgets, real construction path (same as
-production) -- just with isolated data (deepvac_ui) and no blocking modal
-event loops (no_modal_dialogs/no_blocking_menus, both autouse)."""
+"""Tests of the main window."""
 
 import pytest
 
@@ -22,20 +19,24 @@ def test_main_window_constructs(window):
     assert window is not None
 
 
-def test_sidebar_is_present_with_eight_nav_buttons(window):
-    assert len(window._nav_buttons) == 8
+def test_sidebar_is_present_with_six_nav_buttons(window):
+    assert len(window._nav_buttons) == 6
 
 
 def test_title_bar_is_present(window):
     assert window.title_bar is not None
+    assert not hasattr(window.title_bar, "center_btn")
 
 
-def test_default_page_is_dashboard(window):
-    assert window.content_stack.currentIndex() == 0
+def test_default_page_is_analysis_with_its_live_tab(window):
+    from app.common import PAGE_ANALYSIS
+
+    assert window.content_stack.currentIndex() == PAGE_ANALYSIS
+    assert window.editor_area.page_for("live") is not None
 
 
 def test_settings_menu_opens_without_raising(window):
-    window._show_settings()  # QMenu.exec() is patched to return None (autouse)
+    window._show_settings()
 
 
 def test_account_menu_opens_without_raising(window):
@@ -62,4 +63,4 @@ def test_window_closes_cleanly(window):
 
 def test_pages_construct_with_current_user_set(window, fake_user):
     assert window.current_user["email"] == fake_user["email"]
-    assert window.runs == []  # empty_workspace fixture -> nothing cached
+    assert window.runs == []

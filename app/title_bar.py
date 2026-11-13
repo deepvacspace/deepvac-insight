@@ -4,14 +4,16 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from app.common import LOGO_PATH, _render_svg, _svg_icon
+from app.common import LOGO_PATH, LOGO_WHITE_PATH, _render_svg, _svg_icon
 
 
 class TitleBar(QWidget):
-    def __init__(self, main_window):
+    def __init__(self, main_window, show_logo=True):
+        """Window title bar."""
         super().__init__(main_window)
         self._win = main_window
         self.setObjectName("titleBar")
+        self.setAttribute(Qt.WA_StyledBackground)
         self.setFixedHeight(40)
 
         lay = QHBoxLayout(self)
@@ -24,22 +26,18 @@ class TitleBar(QWidget):
         ll = QHBoxLayout(logo_w)
         ll.setContentsMargins(12, 4, 16, 4)
         lbl = QLabel()
-        pix = QPixmap(LOGO_PATH)
+        pix = QPixmap(LOGO_WHITE_PATH)
+        if pix.isNull():
+            pix = QPixmap(LOGO_PATH)
         if not pix.isNull():
-            lbl.setPixmap(pix.scaledToHeight(22, Qt.SmoothTransformation))
+            lbl.setPixmap(pix.scaledToHeight(20, Qt.SmoothTransformation))
         else:
             lbl.setText(self.tr("DEEPVAC"))
             lbl.setObjectName("titleBarBrand")
         lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         ll.addWidget(lbl)
         lay.addWidget(logo_w)
-
-        lay.addStretch(1)
-
-        self.center_btn = QPushButton(self.tr("⌕   Deepvac Dashboard"))
-        self.center_btn.setObjectName("titleCenter")
-        self.center_btn.setFixedSize(320, 26)
-        lay.addWidget(self.center_btn)
+        logo_w.setVisible(show_logo)
 
         lay.addStretch(1)
 
@@ -47,16 +45,6 @@ class TitleBar(QWidget):
             "broadcast", self.tr("Chambers Offline"), "#ef4444", "statusText"
         )
         lay.addWidget(self.status_chamber)
-        lay.addSpacing(4)
-
-        self.btn_bell = QPushButton()
-        self.btn_bell.setObjectName("titleIconBtn")
-        self.btn_bell.setFixedSize(32, 40)
-        self.btn_bell.setFocusPolicy(Qt.NoFocus)
-        self.btn_bell.setToolTip(self.tr("Notifications"))
-        self.btn_bell.setIcon(_svg_icon("bell", "#94a3b8", 16))
-        self.btn_bell.setIconSize(QSize(16, 16))
-        lay.addWidget(self.btn_bell)
         lay.addSpacing(4)
 
         self.btn_min = QPushButton()
@@ -105,13 +93,6 @@ class TitleBar(QWidget):
             self.tr("{0}/{1} Chambers Online").format(connected_count, total)
             if online
             else self.tr("Chambers Offline")
-        )
-
-    def set_bell_active(self, active):
-        color = "#60a5fa" if active else "#94a3b8"
-        self.btn_bell.setIcon(_svg_icon("bell", color, 16))
-        self.btn_bell.setToolTip(
-            self.tr("Notifications — chamber connected") if active else self.tr("Notifications")
         )
 
     def _toggle_max(self):

@@ -1,4 +1,4 @@
-"""ProfileDialog — change display name, email, and password for the signed-in user."""
+"""Dialog to edit the signed-in user's profile."""
 
 import contextlib
 

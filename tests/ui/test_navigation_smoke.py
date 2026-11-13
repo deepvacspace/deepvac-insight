@@ -1,19 +1,15 @@
-"""Navigation smoke tests: visiting every sidebar page constructs its
-expected top-level widget without raising, and re-visiting doesn't grow
-signal-connection counts or attempt a real chamber connection.
-
-Note on "duplicate signal connections": this app's pages (dashboard, runs,
-reports, simulator, monitor, controller, opc) are all built once at
-DeepVacDesktop construction time and live in a QStackedWidget -- _nav_to()
-only changes the visible index, it never reconstructs a page. So the
-realistic risk this check guards against (reconnecting the same signal on
-every visit) doesn't actually exist in this navigation model; the test
-below confirms that's genuinely true (receiver counts stay constant)
-rather than asserting something that can't fail as written.
-"""
+"""Navigation smoke tests."""
 
 import pytest
 
+from app.common import (
+    PAGE_ANALYSIS,
+    PAGE_CAMPAIGNS,
+    PAGE_CONTROLLER,
+    PAGE_COUNT,
+    PAGE_OPC,
+    PAGE_REPORTS,
+)
 from app.main_window import DeepVacDesktop
 
 pytestmark = pytest.mark.ui
@@ -27,17 +23,14 @@ def window(deepvac_ui, fake_user, qtbot):
     return win
 
 
-@pytest.mark.parametrize("index", range(8))
+@pytest.mark.parametrize("index", range(PAGE_COUNT))
 def test_navigate_to_each_page_does_not_raise(window, index):
     window._nav_to(index)
     assert window.content_stack.currentIndex() == index
 
 
-@pytest.mark.parametrize("index", range(8))
+@pytest.mark.parametrize("index", range(PAGE_COUNT))
 def test_revisiting_a_page_does_not_grow_signal_connections(window, index):
-    # QObject.receivers() wants the classic Qt SIGNAL() string form (a
-    # leading '2' + the C++ method signature from QMetaMethod), not the
-    # SignalInstance object itself.
     signature = "2active_page_changed(PyObject)"
     before = window.editor_area.receivers(signature)
 
@@ -50,47 +43,42 @@ def test_revisiting_a_page_does_not_grow_signal_connections(window, index):
 
 
 def test_no_real_chamber_connection_attempted_while_navigating(window):
-    # Live Monitoring's connections are only ever opened by an explicit
-    # Connect click (app/views/monitoring.py's _on_mon_connect_new), never
-    # by navigation or construction -- confirmed here rather than assumed.
-    for index in range(8):
+    for index in range(PAGE_COUNT):
         window._nav_to(index)
     assert window._chamber_sessions == {}
     assert window.opc_server.is_running() is False
 
 
-def test_dashboard_page_widgets_created(window):
-    window._nav_to(0)
-    assert window.content_stack.widget(0) is not None
-
-
-def test_runs_page_widgets_created(window):
-    window._nav_to(1)
-    assert window.run_list is not None
-    assert window.search_box is not None
+def test_run_list_is_a_drawer_of_analysis(window):
+    window._open_runs_drawer()
+    assert window.content_stack.currentWidget() is window.editor_area
+    assert window.runs_drawer.is_open()
+    assert window.run_list is not None and window.search_box is not None
+    window._nav_to(PAGE_CONTROLLER)
+    assert not window.runs_drawer.is_open()
 
 
 def test_analysis_page_widgets_created(window):
-    window._nav_to(2)
+    window._nav_to(PAGE_ANALYSIS)
     assert window.editor_area is not None
 
 
-def test_simulator_page_navigable(window):
-    window._nav_to(3)
-    assert window.content_stack.currentIndex() == 3
-
-
 def test_reports_page_widgets_created(window):
-    window._nav_to(4)
+    window._nav_to(PAGE_REPORTS)
     assert window._report_status_filter is not None
 
 
 def test_controller_page_widgets_created(window):
-    window._nav_to(5)
-    assert window._test_profile_combo is not None
-    assert window._test_start_btn is not None
+    window._nav_to(PAGE_CONTROLLER)
+    assert window.content_stack.currentWidget() is window.controller_widget
+    assert window.controller_widget.start_btn is not None
 
 
 def test_opc_page_navigable(window):
-    window._nav_to(6)
-    assert window.content_stack.currentIndex() == 6
+    window._nav_to(PAGE_OPC)
+    assert window.content_stack.currentIndex() == PAGE_OPC
+
+
+def test_campaigns_page_navigable(window):
+    window._nav_to(PAGE_CAMPAIGNS)
+    assert window.content_stack.currentWidget() is window.campaigns_widget

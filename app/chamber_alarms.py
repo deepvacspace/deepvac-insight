@@ -1,11 +1,4 @@
-"""ChamberAlarmsPanel — alarm rules of one chamber (thresholds, deadband, delay),
-their history and hub sync. Shown on the Controller page for the chamber
-selected there.
-
-Rules live in app/services/alarms_service.py, scoped per chamber. While the
-chamber is connected its ChamberSession evaluates them on every sample, so
-edits then go through the session (which keeps their runtime state);
-otherwise straight to the database."""
+"""Panel for a chamber's alarm rules and history."""
 
 import contextlib
 
@@ -28,8 +21,6 @@ from PySide6.QtWidgets import (
 from app.services import alarm_rule_sync_service as sync_service
 from app.services import alarms_service, licensing_client
 
-# Internal English keys stay stable for storage/comparison; only the label
-# shown to the user is translated (built fresh, per language, where used).
 _CONDITIONS = ["above", "below", "outside range"]
 _SEVERITIES = ["Info", "Warning", "Critical"]
 _VARIABLES = ["temp", "temp_ref", "kp", "ki", "kd", "temp_u", "temp_u_p", "temp_u_i", "temp_u_d"]
@@ -45,12 +36,10 @@ class ChamberAlarmsPanel(QFrame):
         self._build_ui()
         self.set_target(None, None)
 
-    # ── target ───────────────────────────────────────────────────────────────
-
     def set_target(self, chamber, session):
         """The chamber whose rules are shown, and its session when connected."""
         if self.session is not None:
-            with contextlib.suppress(RuntimeError, TypeError):  # the session may be gone already
+            with contextlib.suppress(RuntimeError, TypeError):
                 self.session.alarms_changed.disconnect(self.refresh)
         self.chamber = chamber
         self.session = session
@@ -72,8 +61,6 @@ class ChamberAlarmsPanel(QFrame):
             return alarms_service.list_rules(chamber_id=self.chamber["id"])
         except Exception:
             return []
-
-    # ── UI ───────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         al = QVBoxLayout(self)
@@ -195,8 +182,6 @@ class ChamberAlarmsPanel(QFrame):
             "Warning": self.tr("Warning"),
             "Critical": self.tr("Critical"),
         }.get(sev, sev)
-
-    # ── actions ──────────────────────────────────────────────────────────────
 
     def _toggle_alarm_form(self):
         self._alarm_form.setVisible(not self._alarm_form.isVisible())
@@ -328,8 +313,6 @@ class ChamberAlarmsPanel(QFrame):
             sync_service.resolve_conflict(conflict, keep, self.chamber)
         except licensing_client.LicensingError as exc:
             QMessageBox.warning(self, self.tr("Sync Conflict"), str(exc))
-
-    # ── table ────────────────────────────────────────────────────────────────
 
     def refresh(self):
         if self.chamber is None:

@@ -1,4 +1,4 @@
-"""CollabDialog — host or join a local-network collaboration group and sync shared data."""
+"""Dialog to host or join a collaboration group."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (

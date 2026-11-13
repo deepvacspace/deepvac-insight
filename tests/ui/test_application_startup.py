@@ -1,11 +1,4 @@
-"""Invokes the real application startup path (`python main.py
---smoke-test`) as an actual fresh subprocess, rather than in-process --
-app.app._run_smoke_test() constructs its own QApplication, and pytest-qt's
-shared session-scoped qapp fixture makes reusing that same process a real
-source of double-QApplication/shared-Qt-static complications for no
-benefit. A subprocess is also what Phase 6's CI frozen-build smoke test
-uses, so this is the same invocation being exercised at the source level.
-"""
+"""Tests the application startup in a subprocess."""
 
 import os
 import subprocess
@@ -58,23 +51,17 @@ def test_logging_initialized_creates_log_file(tmp_path):
 def test_runtime_paths_isolated_nothing_written_outside_data_dir(tmp_path):
     _run_smoke_test(tmp_path, extra_args=["--no-splash"])
     written = list((tmp_path / "deepvac_data").rglob("*"))
-    assert written  # something was written (logs, at least)
-    # Nothing escaped to tmp_path directly (only the two subdirs we set up).
+    assert written
     top_level = {p.name for p in tmp_path.iterdir()}
     assert top_level <= {"deepvac_data", "empty_workspace"}
 
 
 def test_translation_initialization_does_not_crash_for_es_and_de(qapp):
-    # In-process rather than via subprocess: forcing a non-English language
-    # for the subprocess would require redirecting QSettings to a registry-
-    # free format first (see qsettings_isolated), which is unnecessary
-    # complexity just to prove install_language() itself doesn't raise for
-    # either bundled translation.
     from app.services import i18n_service
 
     try:
         for code in ("en", "es", "de"):
             installed = i18n_service.install_language(qapp, code)
-            assert installed == (code != "en")  # "en" needs no .qm, es/de do
+            assert installed == (code != "en")
     finally:
-        i18n_service.install_language(qapp, "en")  # later tests read English texts
+        i18n_service.install_language(qapp, "en")

@@ -1,7 +1,4 @@
-"""WikiProposalsDialog — review the wiki changes the AI crew proposed
-(app/services/wiki_service.py): see what changes against the current page and
-approve or reject it. Nothing an agent proposes reaches the wiki until a
-signed-in user approves it here."""
+"""Dialog to review the wiki changes proposed by agents."""
 
 import difflib
 
@@ -38,7 +35,7 @@ class WikiProposalsDialog(QDialog):
         root = QVBoxLayout(self)
         intro = QLabel(
             self.tr(
-                "Changes to the crew's wiki proposed by the AI agents. The wiki changes only when you "
+                "Changes to the wiki proposed by the AI agents. The wiki changes only when you "
                 "approve; a page that changed since the proposal can't be approved."
             )
         )
@@ -125,7 +122,7 @@ class WikiProposalsDialog(QDialog):
 
     @staticmethod
     def diff_text(proposal) -> str:
-        """The proposed page against the current one (all of it, for a new page)."""
+        """Returns the proposal's diff against the current page."""
         path = wiki_service.page_path(proposal["page"])
         current = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
         proposed = proposal["content"].splitlines()

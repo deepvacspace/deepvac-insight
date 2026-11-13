@@ -1,4 +1,4 @@
-"""Entry point — login flow, splash screen, and main() only."""
+"""Application entry point: login, splash screen and main window."""
 
 import sys
 
@@ -70,6 +70,17 @@ def _show_splash(app, window_receiver_attr_name=None):
     return splash
 
 
+_gc_guard = None
+
+
+def _collect_garbage_in_gui_thread():
+    """Runs Python's garbage collection in the GUI thread."""
+    global _gc_guard
+    from pyqtgraph.util.garbage_collector import GarbageCollector
+
+    _gc_guard = GarbageCollector(interval=1.0)
+
+
 def _run_smoke_test(no_splash=False):
     """Runs the startup path headlessly and exits, for CI smoke checks."""
     failure = {}
@@ -82,6 +93,7 @@ def _run_smoke_test(no_splash=False):
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(ICON_PATH))
+    _collect_garbage_in_gui_thread()
     i18n_service.install_language(app, settings_service.load_language())
 
     try:
@@ -126,6 +138,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(ICON_PATH))
+    _collect_garbage_in_gui_thread()
     i18n_service.install_language(app, settings_service.load_language())
 
     try:

@@ -1,5 +1,4 @@
-"""ChambersDialog — add/edit/delete saved chamber connections
-(app/services/chambers_service.py) from the Controller page's chamber picker."""
+"""Dialog to manage saved chamber connections."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -64,7 +63,7 @@ class ChambersDialog(QDialog):
         host_row.addWidget(self._port_spin)
         form.addRow(self.tr("Host / Port"), host_row)
         self._protocol_combo = QComboBox()
-        self._protocol_combo.addItem(self.tr("Sample feed (JSON, e.g. DeepVac Control)"), "json")
+        self._protocol_combo.addItem(self.tr("Sample feed (JSON, e.g. Deepvac Control)"), "json")
         self._protocol_combo.addItem(self.tr("Chamber PLC (PLC gate)"), "plc")
         self._protocol_combo.setToolTip(
             self.tr(
