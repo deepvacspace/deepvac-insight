@@ -10,7 +10,7 @@ uv sync --extra dev
 uv run pyinstaller deepvac.spec --clean
 ```
 
-Output goes to `dist/DeepVac/DeepVac.exe`.
+Output goes to `dist/Deepvac/Deepvac.exe`.
 
 ## 2. Wrap it in an installer
 
@@ -21,7 +21,7 @@ JRSoftware.InnoSetup`).
 iscc installer\deepvac.iss
 ```
 
-Output: `installer\output\DeepVacInsight-Setup-<version>.exe` -- a normal
+Output: `installer\output\DeepvacInsight-Setup-<version>.exe` -- a normal
 Windows installer with a wizard, a Start Menu entry, an optional desktop
 shortcut, and a standard uninstaller (Add/Remove Programs).
 
