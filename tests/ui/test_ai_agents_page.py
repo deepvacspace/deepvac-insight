@@ -37,6 +37,22 @@ def test_shown_it_builds_the_native_view(deepvac_ui, qtbot):
     page.shutdown()
 
 
+def test_a_new_campaign_form_is_the_requirements_stage_and_fits_its_card(deepvac_ui, qtbot):
+    page = AiAgentsPage()
+    qtbot.addWidget(page)
+    page.resize(1300, 900)
+    page.show()
+    page.state = {"campaign": {"id": 1, "state": "completed", "title": "6U CubeSat"}}
+    page.open_new_campaign_form()
+    qtbot.wait(50)
+    assert page.rail.segments["requirement"].property("state") == "now"
+    assert page.rail.segments["report"].property("state") == ""
+    form = page._stage
+    assert form.minimumSizeHint().height() <= page.stage_card.height() < page.height() * 0.8
+    assert page.stage_card.height() > 300
+    assert not page.stage_scroll.verticalScrollBar().isVisible()
+
+
 def test_the_chart_draws_temperature_and_pressure(deepvac_ui, qtbot):
     chart = CampaignChart()
     qtbot.addWidget(chart)

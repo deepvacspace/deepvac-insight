@@ -78,10 +78,10 @@ def started(rig, gauge=False):
     client, supervisor, professor = rig(gauge)
     draft = professor.draft_campaign("6U CubeSat", -10, 45, "acceptance", cycles=1, reason="demo")
     rows = {r["item"]: r["value"] for r in draft["spec_rows"]}
-    assert rows["Thermocouples"] == "+X solar panel, Battery pack, OBC board, −Z structure"
-    assert rows["Stabilisation"].startswith("Battery pack and OBC board within ±3 °C")
+    assert "Thermocouples" not in rows
+    assert rows["Stabilisation"].startswith("Every valid test-article temperature within ±3 °C")
     assert "3 °C/h over 15 min" in rows["Stabilisation"]
-    assert "Shroud (the PLC's control sensor), platen" in rows["Sensors"]
+    assert "Shroud (the PLC's control sensor), platen and 4 temperatures" in rows["Sensors"]
     cid = draft["id"]
     professor.submit_campaign(cid)
     decide(cid, "approve")
@@ -91,7 +91,7 @@ def started(rig, gauge=False):
 def to_dwell(client, supervisor, cid):
     """Runs the campaign to the hot dwell."""
     tick(supervisor, client, T0)
-    assert "sim_dut 2 30 -0.3 -0.4 0.8" in client.commands
+    assert "sim_dut 2 25 -0.2 -0.3 0.75" in client.commands
     assert "sim_tc 1 ok" in client.commands
     decide(cid, "confirm")
     tick(supervisor, client, T0 + 1)
@@ -106,19 +106,24 @@ def test_the_soak_waits_for_the_stabilisation_sensors(rig):
     client, supervisor, cid = started(rig)
     wall = to_dwell(client, supervisor, cid)
     for minute in range(30):
-        client.tcs.update(temp2=30 + minute * 0.5, temp3=35 + minute * 0.4)
+        client.tcs.update(
+            temp1=30 + minute * 0.5,
+            temp2=32 + minute * 0.5,
+            temp3=35 + minute * 0.4,
+            temp4=33 + minute * 0.45,
+        )
         wall, c = run_for(supervisor, client, wall, 60)
     assert c["runtime"]["stabilised_at"] is None
-    assert c["runtime"]["stab_status"].startswith("Battery pack 44.")
-    assert "OBC board" in c["runtime"]["stab_status"] and "°C/h" in c["runtime"]["stab_status"]
-    assert cs.step_progress(c)["status"].startswith("stabilising: Battery pack")
-    client.tcs.update(temp2=48.0, temp3=48.5)
+    assert c["runtime"]["stab_status"].startswith("Temperature 1 44.")
+    assert "Temperature 4" in c["runtime"]["stab_status"] and "°C/h" in c["runtime"]["stab_status"]
+    assert cs.step_progress(c)["status"].startswith("stabilising: Temperature 1")
+    client.tcs.update(temp1=48.0, temp2=48.2, temp3=48.5, temp4=48.4)
     wall, c = run_for(supervisor, client, wall, 300)
     assert c["runtime"]["stabilised_at"] is None
     wall, c = run_for(supervisor, client, wall, 16 * 60)
     assert c["runtime"]["stabilised_at"] is not None
     stabilised = next(e for e in cs.log_entries(cid) if e["action"] == "Plateau stabilised")
-    assert "Battery pack 48.0 °C" in stabilised["detail"]
+    assert "Temperature 1 48.0 °C" in stabilised["detail"]
 
 
 def test_the_pressure_rule_holds_a_heating_ramp_and_resumes_it(rig):
@@ -162,24 +167,21 @@ def test_the_pressure_rule_holds_a_heating_ramp_and_resumes_it(rig):
 def test_an_invalid_stabilisation_sensor_needs_a_person(rig):
     client, supervisor, cid = started(rig)
     wall = to_dwell(client, supervisor, cid)
-    client.tcs["temp1"] = 1372.0
-    wall, c = run_for(supervisor, client, wall, 60)
-    assert c["state"] == "running" and c["runtime"]["tc"]["temp1"]["status"] == "invalid"
-    assert "open circuit" in c["deviations"][-1]["text"]
-    assert c["deviations"][-1]["decision"].startswith("not a stabilisation sensor")
     client.tcs["temp2"] = 1372.0
     wall, c = run_for(supervisor, client, wall, 60)
+    assert c["runtime"]["tc"]["temp2"]["status"] == "invalid"
+    assert "open circuit" in c["deviations"][-1]["text"]
     hold = cs.open_hold_of(cid)
     assert c["state"] == "holding" and hold["kind"] == "sensor"
-    assert hold["title"] == "Battery pack is invalid. Exclude it from the stabilisation criterion?"
-    assert "the criterion uses OBC board" in hold["detail"]
+    assert hold["title"] == "Temperature 2 is invalid. Exclude it from the stabilisation criterion?"
+    assert "the criterion uses Temperature 1, Temperature 3 and Temperature 4" in hold["detail"]
     assert hold["recommendation"]["option"] == "exclude"
     decide(cid, "exclude")
     wall, c = run_for(supervisor, client, wall, 60)
     assert c["state"] == "running" and c["runtime"]["tc"]["temp2"]["status"] == "excluded"
     assert any(e["action"] == "Thermocouple excluded" for e in cs.log_entries(cid))
     assert "excluded from the criterion by Ana" in [d.get("decision") for d in c["deviations"]]
-    client.tcs["temp3"] = 49.5
+    client.tcs.update(temp1=49.5, temp3=49.6, temp4=49.4)
     wall, c = run_for(supervisor, client, wall, 20 * 60)
     assert c["runtime"]["stabilised_at"] is not None, (
         c["state"],
@@ -187,7 +189,7 @@ def test_an_invalid_stabilisation_sensor_needs_a_person(rig):
         cs.open_hold_of(cid),
         c["runtime"]["tc"],
     )
-    assert "Battery pack" not in c["runtime"]["stab_status"]
+    assert "Temperature 2" not in c["runtime"]["stab_status"]
 
 
 def test_a_frozen_or_spiking_sensor_is_found(rig):
@@ -200,7 +202,7 @@ def test_a_frozen_or_spiking_sensor_is_found(rig):
     assert c["runtime"]["tc"]["temp3"]["status"] == "invalid"
     assert "frozen" in c["runtime"]["tc"]["temp3"]["reason"]
     hold = cs.open_hold_of(cid)
-    assert hold["kind"] == "sensor" and hold["title"].startswith("OBC board is invalid")
+    assert hold["kind"] == "sensor" and hold["title"].startswith("Temperature 3 is invalid")
     decide(cid, "recheck")
     wall, c = run_for(supervisor, client, wall, 60)
     assert c["runtime"]["tc"]["temp3"]["status"] == "recheck"
@@ -259,6 +261,6 @@ def test_an_old_pack_gets_the_new_articles(deepvac_data_dir):
     pack = cs.load_pack()
     assert [a["name"] for a in pack["articles"]][1] == "Reaction Wheel Assembly"
     assert pack["stabilise_timeout_min"] == 180.0
-    names = [t["name"] for t in cs.thermocouples_of(pack, "Optical Camera Payload")]
-    assert names == ["Lens barrel", "Focal plane", "Electronics box", "Baseplate"]
-    assert cs.thermocouples_of(pack, "Something else")[0]["name"] == "Thermocouple 1"
+    names = [t["name"] for t in cs.thermocouples_of(pack)]
+    assert names == ["Temperature 1", "Temperature 2", "Temperature 3", "Temperature 4"]
+    assert all("thermocouples" not in a for a in pack["articles"])

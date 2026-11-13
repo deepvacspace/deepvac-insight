@@ -306,21 +306,20 @@ the Agent API.
 
 **The test article** (the standards pack, `data/standards_pack.json`): the demo's
 articles are a 6U CubeSat, a Reaction Wheel Assembly, an Optical Camera Payload and a
-Power Control and Distribution Unit. Each has its test procedure's four thermocouples
-(`temp1` … `temp4`), the ones the soak waits for marked as stabilisation sensors, and
-the demo simulator's thermal model of each (time constant, offset, gradient, how much it
-follows the platen), sent to the simulator when the campaign starts. What the run
-supervisor does with them (`app/api/campaign_supervisor.py`), all in the specification
-the operator approves:
+Power Control and Distribution Unit, each with its predicted temperature range. Every
+article has the same four test-article temperatures (`temp1` … `temp4`, Deepvac Control's
+Temperature 1 to 4); the pack holds the demo simulator's thermal model of each, sent to the
+simulator when the campaign starts. What the run supervisor does with them
+(`app/api/campaign_supervisor.py`), all in the specification the operator approves:
 
-- **Stabilisation**: a dwell starts when the stabilisation sensors are within the band of
-  the plateau and change less than 3 °C/h over 15 min, not when the shroud reaches its
-  setpoint (without thermocouples, the chamber temperature in the band).
+- **Stabilisation**: a dwell starts when every valid test-article temperature is within
+  the band of the plateau and changes less than 3 °C/h over 15 min, not when the shroud
+  reaches its setpoint (without those temperatures, the chamber temperature in the band).
 - **Pressure rule**: above 7.5×10⁻⁵ Torr a heating ramp is held where it is (a dwell's
   clock paused) until the gauge reads 3.8×10⁻⁵ Torr; held over 60 min, a decision point.
-- **Sensor validity**: a thermocouple that reads open (outside −200 … 400 °C), frozen
-  (no change for 5 min) or spiking (4 jumps over 10 °C in 10 min) is marked invalid
-  and left out of the charts and results. A stabilisation sensor is taken out of the
+- **Sensor validity**: a test-article temperature that reads open (outside −200 … 400 °C),
+  frozen (no change for 5 min) or spiking (4 jumps over 10 °C in 10 min) is marked
+  invalid and left out of the charts and results. It is taken out of the stabilisation
   criterion only by a person, at a decision point.
 - **Rogue commands** the gateway refuses: forcing an output, turning off or editing an
   alarm, an agent's own job, venting now, a ramp of 10 °C/min, cycling without vacuum,

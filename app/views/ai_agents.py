@@ -422,7 +422,7 @@ class CampaignChart(QFrame):
         item.addItem(self.empty, ignoreBounds=True)
         lay.addWidget(self.plot, 1)
 
-        lay.addWidget(_label(self.tr("Test-article thermocouples"), "tileHead"))
+        lay.addWidget(_label(self.tr("Test-article temperatures"), "tileHead"))
         tiles = QHBoxLayout()
         tiles.setSpacing(8)
         self.tiles, self.tile_frames, self.tile_names, self.tile_notes = [], [], [], []
@@ -524,7 +524,7 @@ class CampaignChart(QFrame):
             elif status == "recheck":
                 note = self.tr("Being checked again")
             else:
-                note = self.tr("Stabilisation sensor") if s.get("stabilisation") else ""
+                note = ""
             self.tile_notes[i].setText(note)
             self.tile_notes[i].setToolTip(s.get("reason") or "")
             bad = status in ("invalid", "excluded")
@@ -1114,8 +1114,7 @@ class RunView(_Stage):
             self.lay.addWidget(fault, 0, Qt.AlignLeft)
             self.sensor = QComboBox()
             for i, tc in enumerate(c.get("thermocouples") or [], start=1):
-                mark = self.tr(" (stabilisation)") if tc.get("stabilisation") else ""
-                self.sensor.addItem(f"{tc['name']}{mark}", i)
+                self.sensor.addItem(tc["name"], i)
             self.sensor.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             self.sensor.setMinimumContentsLength(12)
             self.sensor_fault = QComboBox()
@@ -1509,6 +1508,7 @@ class AiAgentsPage(QWidget):
 
         body = QHBoxLayout()
         body.setSpacing(16)
+        self._body = body
         self.left_pad, self.right_pad = _plain(), _plain()
         self.stage_card = QFrame()
         self.stage_card.setObjectName("pageCard")
@@ -1596,7 +1596,7 @@ class AiAgentsPage(QWidget):
         c = s.get("campaign")
         stage = stage_of(c)
         form = stage == "requirement" or self.new_campaign_form
-        self.rail.set_stage("requirement" if form and stage == "requirement" else stage)
+        self.rail.set_stage("requirement" if form else stage)
         self._render_banner()
         self.chart.setVisible(not form)
         self.feed.setVisible(not form)
@@ -1604,6 +1604,7 @@ class AiAgentsPage(QWidget):
         self.right_pad.setVisible(form)
         self.stage_card.setFixedWidth(560 if form else 380)
         self._render_stage(c, stage, form)
+        self._fit_stage_card(form)
         if not form:
             self._render_chart(c)
             self.feed.update_campaign(c)
@@ -1645,6 +1646,36 @@ class AiAgentsPage(QWidget):
             self.stage_lay.addWidget(self._stage)
         elif self._stage is not None and c:
             self._stage.update(c)
+
+    def _fit_stage_card(self, form):
+        """Sizes the stage card to the form's height, or to the full height otherwise."""
+        if form and self._stage is not None:
+            margins = self.stage_card.layout().contentsMargins()
+            inner = self.stage_lay.contentsMargins()
+            width = (
+                self.stage_card.width()
+                - margins.left()
+                - margins.right()
+                - inner.left()
+                - inner.right()
+            )
+            self._stage.layout().activate()
+            form_height = (
+                self._stage.heightForWidth(width)
+                if self._stage.hasHeightForWidth()
+                else self._stage.sizeHint().height()
+            )
+            form_height = max(form_height, self._stage.minimumSizeHint().height())
+            height = form_height + margins.top() + margins.bottom() + 4
+            available = self.view.height() - self.rail.height() - 12
+            if available > 0:
+                height = min(height, available)
+            self.stage_card.setFixedHeight(height)
+            self._body.setAlignment(self.stage_card, Qt.AlignTop)
+        else:
+            self.stage_card.setMinimumHeight(0)
+            self.stage_card.setMaximumHeight(16777215)
+            self._body.setAlignment(self.stage_card, Qt.AlignmentFlag(0))
 
     def _close_form(self):
         self.new_campaign_form = False

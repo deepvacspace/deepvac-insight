@@ -40,7 +40,7 @@ Short definitions of the terms used across the wiki, with the page that explains
 | Shroud | the surface the chamber's PID controls (`temp`) in a campaign ([[test-article-thermocouples]]) |
 | Platen | the plate the test article is bolted to (`temp_platen`) |
 | Test article | the part under test in a campaign (the DUT); its thermocouples are `temp1` … `temp4` |
-| Stabilisation sensor | a test-article thermocouple the procedure names for deciding when a plateau is reached |
+| Stabilisation sensor | a test-article temperature that decides when a plateau is reached |
 | Soak / dwell | the time held at a plateau once stabilised |
 | Decision point | where a campaign stops until a person chooses an option; formerly "hold point" ([[decision-points]]) |
 | Pressure rule | a heating ramp held while the pressure is above a limit ([[vacuum-and-outgassing]]) |
